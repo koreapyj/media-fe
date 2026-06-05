@@ -4,7 +4,7 @@
  * main thread re-reads via the normal db helpers after a `done` message.
  */
 import { parseXMLTV } from './xmltv';
-import { upsertProgrammes } from './db';
+import { upsertProgrammesForSource } from './db';
 
 interface LoadMessage {
   type: 'load';
@@ -26,7 +26,7 @@ ctx.addEventListener('message', async (e) => {
     const res = await fetch(msg.url, { cache: 'no-store' });
     if (!res.ok) throw new Error(`EPG fetch failed (${res.status})`);
     const { programmes } = parseXMLTV(await res.text());
-    await upsertProgrammes(programmes, msg.url, msg.formatVersion);
+    await upsertProgrammesForSource(msg.url, programmes, msg.formatVersion);
     ctx.postMessage({ type: 'done', id: msg.id, count: programmes.length });
   } catch (err) {
     ctx.postMessage({ type: 'error', id: msg.id, message: (err as Error).message });

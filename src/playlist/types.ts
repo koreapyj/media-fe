@@ -14,11 +14,15 @@ export interface Channel {
   logo?: string;
   /** `thumb`: channel thumbnail image URL (optional). */
   thumb?: string;
+  /** Category = the playlist this channel came from (assigned when merging playlists). */
+  playlist?: string;
 }
 
 /** The full parsed playlist. */
 export interface Playlist {
   /** `url-tvg` (or `x-tvg-url`) from the #EXTM3U header — the XMLTV EPG URL, if present. */
   epgUrl?: string;
+  /** Category name from a `#PLAYLIST:` directive, if present. */
+  name?: string;
   channels: Channel[];
 }

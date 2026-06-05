@@ -1,10 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** URL of the M3U playlist to load (required). */
-  readonly VITE_PLAYLIST_URL: string;
-  /** Optional override for the XMLTV EPG URL (defaults to the playlist's `url-tvg`). */
-  readonly VITE_EPG_URL?: string;
+  /** Optional override for the JSON manifest URL (defaults to `config.json` under the app base). */
+  readonly VITE_CONFIG_URL?: string;
 }
 
 interface ImportMeta {

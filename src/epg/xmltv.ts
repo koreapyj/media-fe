@@ -13,6 +13,8 @@ export interface Programme {
   subTitle?: string;
   desc?: string;
   category?: string;
+  /** EPG source URL this programme came from (assigned at store time, not parsed). */
+  source?: string;
 }
 
 export interface EpgChannel {

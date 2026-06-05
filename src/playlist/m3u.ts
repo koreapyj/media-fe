@@ -50,6 +50,7 @@ export function parseM3U(text: string): Playlist {
   const lines = text.split(/\r?\n/);
   const channels: Channel[] = [];
   let epgUrl: string | undefined;
+  let name: string | undefined;
   let pending: Channel | null = null;
   const seenXUrls = new Set<string>();
 
@@ -60,6 +61,11 @@ export function parseM3U(text: string): Playlist {
     if (line.startsWith('#EXTM3U')) {
       const attrs = parseAttributes(line.slice('#EXTM3U'.length));
       epgUrl = attrs['url-tvg'] ?? attrs['x-tvg-url'] ?? epgUrl;
+      continue;
+    }
+
+    if (line.startsWith('#PLAYLIST:')) {
+      name = line.slice('#PLAYLIST:'.length).trim() || name;
       continue;
     }
 
@@ -104,7 +110,7 @@ export function parseM3U(text: string): Playlist {
     }
   }
 
-  return { epgUrl, channels };
+  return { epgUrl, name, channels };
 }
 
 /** Fetch and parse the playlist from a URL. */
@@ -112,4 +118,60 @@ export async function loadPlaylist(url: string): Promise<Playlist> {
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to load playlist (${res.status}) from ${url}`);
   return parseM3U(await res.text());
+}
+
+/** The merged result of loading several playlists. */
+export interface MergedPlaylists {
+  channels: Channel[];
+  /** Distinct XMLTV EPG URLs (one per playlist's `url-tvg`). */
+  epgUrls: string[];
+}
+
+/**
+ * Load several playlists and merge them: channels concatenated in manifest order, EPG URLs collected
+ * from each playlist's `url-tvg` (de-duplicated). Failed playlists are skipped with a warning; throws
+ * only if every playlist fails. A final uniqueness pass guarantees route slugs stay distinct across
+ * playlists (collisions aren't expected, but must never break routing).
+ */
+export async function loadPlaylists(urls: string[]): Promise<MergedPlaylists> {
+  const results = await Promise.allSettled(urls.map(loadPlaylist));
+  const loaded: Array<{ url: string; playlist: Playlist }> = [];
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') loaded.push({ url: urls[i], playlist: r.value });
+    else console.warn(`Skipping playlist ${urls[i]}:`, r.reason);
+  });
+  if (!loaded.length) throw new Error('No playlists could be loaded');
+
+  const epgUrls = [
+    ...new Set(loaded.map((l) => l.playlist.epgUrl).filter((u): u is string => !!u)),
+  ];
+
+  const seen = new Set<string>();
+  const channels: Channel[] = [];
+  for (const { url, playlist } of loaded) {
+    // Category = the `#PLAYLIST:` name, else the file name without extension.
+    const category = playlist.name || fileStem(url);
+    for (const ch of playlist.channels) {
+      let xUrl = ch.xUrl;
+      let n = 2;
+      while (seen.has(xUrl)) xUrl = `${ch.xUrl}-${n++}`;
+      seen.add(xUrl);
+      channels.push({ ...ch, xUrl, playlist: category });
+    }
+  }
+
+  return { channels, epgUrls };
+}
+
+/** Last path segment of a URL without its extension (e.g. `…/地上.m3u?x=1` → `地上`). */
+function fileStem(url: string): string {
+  const path = url.split(/[?#]/)[0];
+  let base = path.slice(path.lastIndexOf('/') + 1);
+  try {
+    base = decodeURIComponent(base);
+  } catch {
+    /* keep raw */
+  }
+  const dot = base.lastIndexOf('.');
+  return (dot > 0 ? base.slice(0, dot) : base) || url;
 }

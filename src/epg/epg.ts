@@ -1,5 +1,5 @@
 import type { Programme } from './xmltv';
-import { getEpgMeta, getProgrammesAround, getProgrammesInRange } from './db';
+import { getEpgMeta, getProgrammesAround, getProgrammesInRange, removeSourcesNotIn } from './db';
 
 /** Longest programme we expect, so a still-running programme that started before the window is caught. */
 const GUIDE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -8,7 +8,7 @@ const GUIDE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6 hours
 const REFRESH_AFTER_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 /** Bump when the parsed Programme shape changes (e.g. a new field) to invalidate stale caches. */
-const EPG_FORMAT_VERSION = 2;
+const EPG_FORMAT_VERSION = 3;
 
 export interface NowNext {
   now?: Programme;
@@ -19,7 +19,8 @@ export interface NowNext {
 
 let worker: Worker | null = null;
 let nextLoadId = 1;
-let inFlight: Promise<void> | null = null;
+/** One in-flight load per source URL, so different feeds load in parallel but the same feed isn't double-loaded. */
+const inFlight = new Map<string, Promise<void>>();
 const pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
 const updateListeners = new Set<() => void>();
 
@@ -43,56 +44,59 @@ function getWorker(): Worker {
   return worker;
 }
 
-/** Post one load to the worker, coalescing concurrent requests onto a single in-flight load. */
+/** Post one source's load to the worker, coalescing concurrent requests for the same URL. */
 function load(url: string): Promise<void> {
-  if (inFlight) return inFlight;
+  const existing = inFlight.get(url);
+  if (existing) return existing;
   const id = nextLoadId++;
   const w = getWorker();
-  inFlight = new Promise<void>((resolve, reject) => {
+  const p = new Promise<void>((resolve, reject) => {
     pending.set(id, {
-      resolve: () => ((inFlight = null), resolve()),
-      reject: (e) => ((inFlight = null), reject(e)),
+      resolve: () => (inFlight.delete(url), resolve()),
+      reject: (e) => (inFlight.delete(url), reject(e)),
     });
     w.postMessage({ type: 'load', id, url, formatVersion: EPG_FORMAT_VERSION });
   });
-  return inFlight;
+  inFlight.set(url, p);
+  return p;
 }
 
-/** Subscribe to "EPG data updated" (a load finished); returns an unsubscribe fn. */
+/** Subscribe to "EPG data updated" (a feed finished loading); returns an unsubscribe fn. */
 export function onEpgUpdated(listener: () => void): () => void {
   updateListeners.add(listener);
   return () => updateListeners.delete(listener);
 }
 
-/**
- * Ensure the EPG is loaded into IndexedDB, refreshing from `url` (via the worker) when the cache is
- * stale. Network/parse failures are non-fatal if a usable cache already exists.
- */
-export async function ensureEpg(url: string | undefined): Promise<void> {
-  if (!url) return;
-  const meta = await getEpgMeta();
+/** Load one EPG source if its cache is stale; failures are non-fatal (keep any cached data). */
+async function ensureOne(url: string): Promise<void> {
+  const meta = await getEpgMeta(url);
   const fresh =
     meta &&
-    meta.source === url &&
     meta.formatVersion === EPG_FORMAT_VERSION &&
     Date.now() - meta.lastLoaded < REFRESH_AFTER_MS;
   if (fresh) return;
   try {
     await load(url);
   } catch (err) {
-    if (meta) console.warn('EPG refresh failed; using cached data.', err);
-    else console.error('EPG load failed and no cache available.', err);
+    if (meta) console.warn(`EPG refresh failed for ${url}; using cached data.`, err);
+    else console.error(`EPG load failed for ${url} and no cache available.`, err);
   }
 }
 
-/** Force an EPG re-download via the worker (used by the hourly refresh). */
-export async function refreshEpg(url: string | undefined): Promise<void> {
-  if (!url) return;
-  try {
-    await load(url);
-  } catch (err) {
-    console.warn('EPG refresh failed.', err);
-  }
+/**
+ * Ensure every configured EPG source is loaded into IndexedDB (each independently, off-thread), and drop
+ * any stored source no longer in the list. Stale-but-cached sources are skipped; failures are non-fatal.
+ */
+export async function ensureEpg(urls: string[]): Promise<void> {
+  await removeSourcesNotIn(urls);
+  await Promise.all(urls.map(ensureOne));
+}
+
+/** Force a re-download of every EPG source via the worker (used by the hourly refresh). */
+export async function refreshEpg(urls: string[]): Promise<void> {
+  await Promise.all(
+    urls.map((url) => load(url).catch((err) => console.warn(`EPG refresh failed for ${url}.`, err))),
+  );
 }
 
 /** Find the current and upcoming programme for a channel id at time `at` (default: now). */

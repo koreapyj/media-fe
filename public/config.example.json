@@ -1,0 +1,6 @@
+{
+  "playlists": [
+    "channels.m3u",
+    "https://example.com/another-playlist.m3u"
+  ]
+}

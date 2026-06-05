@@ -197,54 +197,8 @@ export function createEpgOverlay(
   cols.className = 'epg-channels';
 
   // Channel columns + their rendered blocks (keyed by start) for now-highlight and reconcile.
+  // Populated per active tab by renderColumns() (set up near the end).
   const columns: ColumnState[] = [];
-
-  for (const ch of channels) {
-    const col = document.createElement('div');
-    col.className = 'epg-col';
-
-    // Header is a link to the channel; clicking tunes in place (no permalink change).
-    const head = document.createElement('a');
-    head.className = 'epg-col-head';
-    head.href = hrefFor({ kind: 'channel', xUrl: ch.xUrl });
-    head.addEventListener('click', (e) => {
-      e.preventDefault();
-      handlers.onWatch(ch);
-      handlers.onClose();
-    });
-
-    const line1 = document.createElement('div');
-    line1.className = 'epg-head-1';
-    if (ch.chno != null) {
-      const chno = document.createElement('span');
-      chno.className = 'epg-chno';
-      chno.textContent = ch.chno;
-      line1.appendChild(chno);
-    }
-    if (ch.logo) {
-      const img = document.createElement('img');
-      img.className = 'epg-head-img';
-      img.loading = 'lazy';
-      img.src = ch.logo;
-      img.alt = '';
-      line1.appendChild(img);
-    }
-    const line2 = document.createElement('div');
-    line2.className = 'epg-head-2';
-    line2.textContent = ch.name;
-    head.append(line1, line2);
-
-    const colBody = document.createElement('div');
-    colBody.className = 'epg-col-body';
-    colBody.style.height = `${bodyH}px`;
-
-    col.append(head, colBody);
-    cols.appendChild(col);
-
-    const colState: ColumnState = { ch, colBody, byStart: new Map() };
-    columns.push(colState);
-    void loadColumn(colState);
-  }
 
   // Now-line spanning the channel area.
   const nowLine = document.createElement('div');
@@ -358,6 +312,74 @@ export function createEpgOverlay(
     for (const col of columns) void loadColumn(col);
   }
 
+  /** Build one channel column (header link + body) and start loading its programmes. */
+  function buildColumn(ch: Channel): void {
+    const col = document.createElement('div');
+    col.className = 'epg-col';
+
+    // Header is a link to the channel; clicking tunes in place (no permalink change).
+    const head = document.createElement('a');
+    head.className = 'epg-col-head';
+    head.href = hrefFor({ kind: 'channel', xUrl: ch.xUrl });
+    head.addEventListener('click', (e) => {
+      e.preventDefault();
+      handlers.onWatch(ch);
+      handlers.onClose();
+    });
+
+    const line1 = document.createElement('div');
+    line1.className = 'epg-head-1';
+    if (ch.chno != null) {
+      const chno = document.createElement('span');
+      chno.className = 'epg-chno';
+      chno.textContent = ch.chno;
+      line1.appendChild(chno);
+    }
+    if (ch.logo) {
+      const img = document.createElement('img');
+      img.className = 'epg-head-img';
+      img.loading = 'lazy';
+      img.src = ch.logo;
+      img.alt = '';
+      line1.appendChild(img);
+    }
+    const line2 = document.createElement('div');
+    line2.className = 'epg-head-2';
+    line2.textContent = ch.name;
+    head.append(line1, line2);
+
+    const colBody = document.createElement('div');
+    colBody.className = 'epg-col-body';
+    colBody.style.height = `${bodyH}px`;
+
+    col.append(head, colBody);
+    cols.appendChild(col);
+
+    const colState: ColumnState = { ch, colBody, byStart: new Map() };
+    columns.push(colState);
+    void loadColumn(colState);
+  }
+
+  /** Replace the visible columns with those for `list` (a playlist tab's channels). */
+  function renderColumns(list: Channel[]): void {
+    cols.replaceChildren();
+    columns.length = 0;
+    for (const ch of list) buildColumn(ch);
+  }
+
+  /** Scroll the current channel's column to the centre (if it's in the active tab). */
+  function centerCurrent(): void {
+    if (!current) return;
+    const idx = columns.findIndex((c) => c.ch.xUrl === current.xUrl);
+    if (idx < 0) return;
+    requestAnimationFrame(() => {
+      if (!overlay.isConnected) return;
+      const colEl = columns[idx]?.colBody.parentElement as HTMLElement | null;
+      if (!colEl) return;
+      scroll.scrollLeft = Math.max(0, colEl.offsetLeft + colEl.offsetWidth / 2 - scroll.clientWidth / 2);
+    });
+  }
+
   function openDetail(p: Programme, ch: Channel): void {
     overlay.querySelector('.epg-detail')?.remove();
     const modal = document.createElement('div');
@@ -399,16 +421,48 @@ export function createEpgOverlay(
     overlay.appendChild(modal);
   }
 
-  // Once laid out, scroll horizontally so the current channel's column is centered (clamped).
-  const currentIdx = current ? channels.findIndex((c) => c.xUrl === current.xUrl) : -1;
-  if (currentIdx >= 0) {
-    requestAnimationFrame(() => {
-      if (!overlay.isConnected) return;
-      const colEl = columns[currentIdx]?.colBody.parentElement as HTMLElement | null;
-      if (!colEl) return;
-      scroll.scrollLeft = Math.max(0, colEl.offsetLeft + colEl.offsetWidth / 2 - scroll.clientWidth / 2);
-    });
+  // Group channels by playlist into tabs; the active tab's channels are shown as columns.
+  const groups: Array<{ name: string; channels: Channel[] }> = [];
+  const byPlaylist = new Map<string, Channel[]>();
+  for (const ch of channels) {
+    const name = ch.playlist ?? '';
+    let arr = byPlaylist.get(name);
+    if (!arr) {
+      arr = [];
+      byPlaylist.set(name, arr);
+      groups.push({ name, channels: arr });
+    }
+    arr.push(ch);
   }
+
+  const tabEls: HTMLButtonElement[] = [];
+  const selectTab = (i: number): void => {
+    tabEls.forEach((t, j) => t.classList.toggle('is-active', j === i));
+    renderColumns(groups[i]?.channels ?? []);
+    scroll.scrollLeft = 0;
+    centerCurrent();
+  };
+
+  // Only show the tab bar when there's more than one playlist.
+  if (groups.length > 1) {
+    const tabs = document.createElement('div');
+    tabs.className = 'epg-tabs';
+    groups.forEach((g, i) => {
+      const tab = document.createElement('button');
+      tab.className = 'epg-tab';
+      tab.textContent = g.name;
+      tab.addEventListener('click', () => selectTab(i));
+      tabEls.push(tab);
+      tabs.appendChild(tab);
+    });
+    overlay.insertBefore(tabs, scroll);
+  }
+
+  // Open on the tab containing the current channel (else the first).
+  const initial = current
+    ? groups.findIndex((g) => g.channels.some((c) => c.xUrl === current.xUrl))
+    : 0;
+  selectTab(initial < 0 ? 0 : initial);
 
   return { element: overlay, refresh };
 }

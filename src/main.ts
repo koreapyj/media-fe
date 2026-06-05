@@ -1,7 +1,7 @@
 import './styles.css';
 import 'shaka-player/dist/controls.css';
-import { PLAYLIST_URL, EPG_URL_OVERRIDE } from './config';
-import { loadPlaylist, compareChno } from './playlist/m3u';
+import { CONFIG_URL } from './config';
+import { loadPlaylists, compareChno } from './playlist/m3u';
 import type { Channel } from './playlist/types';
 import { ensureEpg, refreshEpg, onEpgUpdated } from './epg/epg';
 import { Router, hrefFor, type Route } from './router';
@@ -18,7 +18,7 @@ class App {
   private currentChannel: Channel | null = null;
   private epgOverlay: HTMLElement | null = null;
   private epgRefresh: (() => void) | null = null; // refresh fn of the open overlay, if any
-  private epgUrl: string | undefined;
+  private epgUrls: string[] = []; // distinct XMLTV sources (one per playlist's url-tvg)
   private nav = 0; // generation token to ignore stale async navigations
   private readonly router: Router;
   private channelsByNumber: Channel[] = []; // channels with a number, ordered numerically
@@ -31,24 +31,37 @@ class App {
   async start(): Promise<void> {
     this.root.innerHTML = '<div class="loading">Loading playlist…</div>';
     try {
-      const playlist = await loadPlaylist(PLAYLIST_URL);
-      this.channels = playlist.channels;
+      const playlists = await this.loadManifest();
+      const { channels, epgUrls } = await loadPlaylists(playlists);
+      this.channels = channels;
       this.byXUrl = new Map(this.channels.map((c) => [c.xUrl, c]));
       this.channelsByNumber = this.channels
         .filter((c) => c.chno != null)
         .sort((a, b) => compareChno(a.chno, b.chno));
       this.osd = createChannelOsd(this.root, this.channels, (c) => void this.showChannel(c));
       this.installShortcuts();
-      // Load/refresh EPG in the background (off-thread worker); the UI fills in as data lands.
-      this.epgUrl = EPG_URL_OVERRIDE ?? playlist.epgUrl;
-      void ensureEpg(this.epgUrl);
+      // Load/refresh each EPG source in the background (off-thread worker); the UI fills in as data lands.
+      this.epgUrls = epgUrls;
+      void ensureEpg(this.epgUrls);
       this.scheduleEpgRefresh();
-      // When a (re)load finishes, live-update the guide overlay if it's open.
+      // When a feed finishes (re)loading, live-update the guide overlay if it's open.
       onEpgUpdated(() => this.epgRefresh?.());
       this.router.start();
     } catch (err) {
-      this.fatal('Failed to load playlist: ' + (err as Error).message);
+      this.fatal('Failed to load playlists: ' + (err as Error).message);
     }
+  }
+
+  /** Fetch the JSON manifest listing the playlist URLs (the only source — no fallback). */
+  private async loadManifest(): Promise<string[]> {
+    const res = await fetch(CONFIG_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`Failed to load config (${res.status}) from ${CONFIG_URL}`);
+    const manifest = (await res.json()) as { playlists?: unknown };
+    const playlists = Array.isArray(manifest.playlists)
+      ? manifest.playlists.filter((u): u is string => typeof u === 'string' && u !== '')
+      : [];
+    if (!playlists.length) throw new Error('Config lists no playlists');
+    return playlists;
   }
 
   private async onRoute(route: Route): Promise<void> {
@@ -162,8 +175,8 @@ class App {
     const next = new Date(now);
     next.setHours(next.getHours() + 1, 0, 0, 0);
     window.setTimeout(() => {
-      void refreshEpg(this.epgUrl);
-      window.setInterval(() => void refreshEpg(this.epgUrl), 60 * 60 * 1000);
+      void refreshEpg(this.epgUrls);
+      window.setInterval(() => void refreshEpg(this.epgUrls), 60 * 60 * 1000);
     }, next.getTime() - now);
   }
 
