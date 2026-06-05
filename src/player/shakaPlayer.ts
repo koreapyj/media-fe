@@ -29,6 +29,8 @@ function isAssTrack(t: shaka.extern.TextTrack): boolean {
 export class TvPlayer implements AssSink {
   readonly container: HTMLElement;
   private readonly video: HTMLVideoElement;
+  /** Element put into fullscreen — must contain any overlays (the EPG guide) so they show in fullscreen. */
+  private readonly fullscreenTarget: HTMLElement;
   private player: shaka.Player;
   private ui: shaka.ui.Overlay | null = null;
   private libass: LibassRenderer | null = null;
@@ -45,9 +47,14 @@ export class TvPlayer implements AssSink {
   /** Reused small canvas for frame-change detection while stepping frames. */
   private diffCanvas: HTMLCanvasElement | null = null;
 
-  private constructor(container: HTMLElement, video: HTMLVideoElement) {
+  private constructor(
+    container: HTMLElement,
+    video: HTMLVideoElement,
+    fullscreenTarget: HTMLElement,
+  ) {
     this.container = container;
     this.video = video;
+    this.fullscreenTarget = fullscreenTarget;
     this.player = new shaka.Player();
     // Our ASS parser returns no cues (libass draws the overlay), so Shaka UI's default text
     // displayer renders nothing — no need to override textDisplayFactory.
@@ -78,8 +85,11 @@ export class TvPlayer implements AssSink {
     this.video.addEventListener('leavepictureinpicture', () => this.container.classList.remove('pip'));
   }
 
-  /** Create the player, its video/container, and the Shaka UI overlay. */
-  static async create(): Promise<TvPlayer> {
+  /**
+   * Create the player, its video/container, and the Shaka UI overlay. `fullscreenTarget` is the element
+   * put into fullscreen (should contain any overlays like the EPG guide so they remain visible there).
+   */
+  static async create(fullscreenTarget: HTMLElement): Promise<TvPlayer> {
     shaka.polyfill.installAll();
     registerAssParser();
     registerBorderTypeMenu();
@@ -93,11 +103,13 @@ export class TvPlayer implements AssSink {
     video.playsInline = true;
     container.appendChild(video);
 
-    const tv = new TvPlayer(container, video);
+    const tv = new TvPlayer(container, video, fullscreenTarget);
     await tv.player.attach(video);
 
     tv.ui = new shaka.ui.Overlay(tv.player, container, video);
     tv.ui.configure({
+      // Fullscreen the app root (which holds the EPG overlay) so the guide shows in fullscreen.
+      fullScreenElement: fullscreenTarget,
       // Shaka's built-in top title slot; TvPlayer feeds it the current programme title.
       topControlPanelElements: ['content_title', 'spacer'],
       controlPanelElements: [
@@ -242,7 +254,7 @@ export class TvPlayer implements AssSink {
 
   toggleFullscreen(): void {
     if (document.fullscreenElement) void document.exitFullscreen();
-    else void this.container.requestFullscreen();
+    else void this.fullscreenTarget.requestFullscreen();
   }
 
   /** Toggle the first closed-caption track on/off (mirrors the captions button). */

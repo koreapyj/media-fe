@@ -88,7 +88,7 @@ class App {
     const gen = ++this.nav;
     try {
       if (!this.tvPlayer) {
-        this.tvPlayer = await TvPlayer.create();
+        this.tvPlayer = await TvPlayer.create(this.root);
         setEpgToggle(() => this.toggleEpg());
       }
       if (gen !== this.nav) return;
