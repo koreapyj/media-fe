@@ -32,6 +32,11 @@ export function setEpgToggle(fn: (() => void) | null): void {
   toggleHandler = fn;
 }
 
+/** Invoke the bound EPG toggle (used by the mobile floating button). */
+export function requestEpgToggle(): void {
+  toggleHandler?.();
+}
+
 /** Build Shaka's icon markup (svg.shaka-ui-icon) for a raw SVG path. */
 function iconSvg(path: string): SVGSVGElement {
   const NS = 'http://www.w3.org/2000/svg';
@@ -45,11 +50,16 @@ function iconSvg(path: string): SVGSVGElement {
   return svg;
 }
 
+/** A fresh copy of the EPG (calendar) icon SVG, for reuse outside Shaka's control bar. */
+export function epgIconSvg(): SVGSVGElement {
+  return iconSvg(ICON_PATH);
+}
+
 class EpgButton extends shaka.ui.Element {
   constructor(parent: HTMLElement, controls: shaka.ui.Controls) {
     super(parent, controls);
     const button = document.createElement('button');
-    button.classList.add('shaka-tooltip');
+    button.classList.add('shaka-tooltip', 'shaka-epg-button');
     button.setAttribute('aria-label', 'Program guide');
     button.appendChild(iconSvg(ICON_PATH));
 

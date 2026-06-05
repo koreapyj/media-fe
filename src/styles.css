@@ -19,6 +19,7 @@ html, body, #app {
 body {
   background: var(--bg);
   color: var(--fg);
+  font-family: sans-serif;
   overflow: hidden;
 }
 
@@ -78,6 +79,55 @@ a { color: inherit; text-decoration: none; }
 .video-wrap { position: absolute; inset: 0; }
 .tv-shaka, .video-wrap .shaka-video-container { width: 100%; height: 100%; }
 .tv-shaka video { width: 100%; height: 100%; background: #000; }
+/* The channel bar + programme info panel + floating button are desktop-hidden (mobile-only). */
+.player-info, .player-chbar, .epg-fab { display: none; }
+
+/* Portrait/square viewport (ratio ≤ 1:1): video constrained to 16:9 at the top, programme
+   name + description scroll below it. */
+@media (max-aspect-ratio: 1/1) {
+  .player-view { display: flex; flex-direction: column; background: var(--bg); }
+  .video-wrap {
+    position: static; inset: auto;
+    width: 100%; height: auto; aspect-ratio: 16 / 9; flex: 0 0 auto; background: #000;
+  }
+  .player-chbar {
+    display: flex; flex: 0 0 auto; overflow-x: auto;
+    background: var(--panel); border-bottom: 1px solid #232b38;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chbar-item {
+    flex: 0 0 auto; width: 128px; box-sizing: border-box;
+    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 6px 8px; color: inherit; cursor: pointer;
+    border-right: 1px solid #1b2230;
+  }
+  .chbar-item:hover { background: var(--panel-2); }
+  .chbar-item.is-current { background: #14385f; }
+  .player-info {
+    display: block; flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    padding: .9rem 1.1rem; color: var(--fg);
+  }
+  .player-info .pi-channel {
+    color: var(--muted); font-size: .85rem; font-weight: 600; margin-bottom: .35rem;
+  }
+  .player-info .pi-title { font-weight: 700; font-size: 1.15rem; line-height: 1.3; }
+  .player-info .pi-sub { color: #cdd6e4; font-size: .95rem; margin-top: .3rem; }
+  .player-info .pi-desc {
+    color: var(--muted); white-space: pre-wrap; line-height: 1.55; margin-top: .6rem;
+  }
+  .player-info .pi-sub:empty, .player-info .pi-desc:empty { display: none; }
+
+  /* Hide Shaka's control-bar EPG button; the floating button replaces it on mobile. */
+  .shaka-epg-button { display: none !important; }
+  .epg-fab {
+    display: inline-flex; align-items: center; justify-content: center;
+    position: fixed; right: 16px; bottom: 16px; z-index: 50;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: #fff; color: #111; border: 0; cursor: pointer;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, .45);
+  }
+  .epg-fab svg { width: 26px; height: 26px; fill: currentColor; }
+}
 /* libass injects its own canvas overlay. SubtitlesOctopus sets the parent to position:relative,
    but Shaka's .shaka-video-container is display:flex — so a relative parent becomes a flex item
    placed beside the video and the canvas renders off-screen. Force it to overlay the video

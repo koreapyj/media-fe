@@ -73,7 +73,11 @@ class App {
       if (gen !== this.nav) return;
       this.currentChannel = channel;
       this.closeEpg();
-      this.mount(createPlayerView(this.tvPlayer.container));
+      this.mount(
+        createPlayerView(channel, this.channels, this.tvPlayer.container, (ch) =>
+          void this.showChannel(ch),
+        ),
+      );
       await this.tvPlayer.playChannel(channel);
     } catch (err) {
       if (gen === this.nav) console.error('Playback failed', err);
