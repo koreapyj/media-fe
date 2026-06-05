@@ -5,6 +5,7 @@ import { ASS_MIME_TYPES, registerAssParser, setAssSink, type AssSink } from './a
 import { subtitleStyle } from './subtitleStyle';
 import { registerBorderTypeMenu } from '../ui/borderTypeMenu';
 import { registerEpgButton } from '../ui/epgGuide';
+import { registerLiveButton } from '../ui/liveButton';
 import { nowNext } from '../epg/epg';
 import { loadJSON, saveJSON } from '../storage';
 
@@ -77,6 +78,7 @@ export class TvPlayer implements AssSink {
     registerAssParser();
     registerBorderTypeMenu();
     registerEpgButton();
+    registerLiveButton();
 
     const container = document.createElement('div');
     container.className = 'tv-shaka';
@@ -96,6 +98,7 @@ export class TvPlayer implements AssSink {
         'play_pause',
         'mute',
         'volume',
+        'live',
         'spacer',
         'epg-guide',
         'language',
