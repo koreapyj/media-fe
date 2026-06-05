@@ -8,12 +8,13 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "verify": "node scripts/verify-bootstrap.mjs && node scripts/verify-ass-timing.mjs"
+    "verify": "node scripts/verify-bootstrap.mjs && node scripts/verify-ass-timing.mjs && node scripts/verify-xmltv.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "fast-xml-parser": "^5.8.0",
     "idb": "^8.0.0",
     "libass-wasm": "^4.1.0",
     "shaka-player": "5.1.0"

@@ -4,6 +4,8 @@ import { LibassRenderer } from './libassRenderer';
 import { ASS_MIME_TYPES, registerAssParser, setAssSink, type AssSink } from './assTextParser';
 import { subtitleStyle } from './subtitleStyle';
 import { registerBorderTypeMenu } from '../ui/borderTypeMenu';
+import { registerEpgButton } from '../ui/epgGuide';
+import { nowNext } from '../epg/epg';
 import { loadJSON, saveJSON } from '../storage';
 
 function isAssTrack(t: shaka.extern.TextTrack): boolean {
@@ -37,6 +39,8 @@ export class TvPlayer implements AssSink {
   private unsubscribeStyle: (() => void) | null = null;
   /** Skip persisting subtitle-language changes during programmatic (restore) selection. */
   private suppressSubtitlePersist = false;
+  /** Reschedule handle for updating Shaka's content title with the current programme. */
+  private contentTitleTimer: number | undefined;
 
   private constructor(container: HTMLElement, video: HTMLVideoElement) {
     this.container = container;
@@ -72,6 +76,7 @@ export class TvPlayer implements AssSink {
     shaka.polyfill.installAll();
     registerAssParser();
     registerBorderTypeMenu();
+    registerEpgButton();
 
     const container = document.createElement('div');
     container.className = 'tv-shaka';
@@ -85,23 +90,29 @@ export class TvPlayer implements AssSink {
 
     tv.ui = new shaka.ui.Overlay(tv.player, container, video);
     tv.ui.configure({
+      // Shaka's built-in top title slot; TvPlayer feeds it the current programme title.
+      topControlPanelElements: ['content_title', 'spacer'],
       controlPanelElements: [
         'play_pause',
         'mute',
         'volume',
         'spacer',
+        'epg-guide',
+        'language',
         'captions',
+        'quality',
         'overflow_menu',
         'fullscreen',
       ],
-      // Subtitle selection + style (size wired to libass, custom border type) and audio/quality.
+      "enableTooltips": true,
+      "enableKeyboardPlaybackControls": false,
+      "singleClickForPlayAndPause": false,
+      "doubleClickForFullscreen": false,
       overflowMenuButtons: [
-        'captions',
-        'captions-size',
+        "statistics",
         'libass-border-type',
-        'language',
-        'quality',
-        'playback_rate',
+        "picture_in_picture",
+        "remote",
       ],
     });
     return tv;
@@ -119,6 +130,42 @@ export class TvPlayer implements AssSink {
     await this.player.load(channel.streamUrl);
     this.applySubtitleSelection();
     this.suppressSubtitlePersist = false;
+
+    this.startContentTitle(channel);
+  }
+
+  /**
+   * Feed Shaka's `content_title` element the current programme title, re-arming at each programme
+   * boundary (programme end, next start, or a fallback). Falls back to the channel name when there's
+   * no EPG. Supersedes any prior channel's updater.
+   */
+  private startContentTitle(channel: Channel): void {
+    clearTimeout(this.contentTitleTimer);
+    const el = this.container.querySelector('.shaka-content-title') as HTMLElement | null;
+    if (!el) return;
+    const setText = (t: string): void => {
+      el.textContent = t;
+      this.video.title = t; // also surfaces to OS media session / casting
+    };
+    if (!channel.tvgId) {
+      setText(channel.name);
+      return;
+    }
+    const run = async (): Promise<void> => {
+      let at: number;
+      try {
+        const { now, next } = await nowNext(channel.tvgId);
+        setText(now?.title ?? channel.name);
+        at = now ? now.stop : (next?.start ?? Date.now() + 60_000);
+      } catch {
+        setText(channel.name);
+        at = Date.now() + 60_000;
+      }
+      const delay = Math.min(30 * 60_000, Math.max(1_000, at - Date.now()));
+      clearTimeout(this.contentTitleTimer);
+      this.contentTitleTimer = window.setTimeout(run, delay);
+    };
+    void run();
   }
 
   /** Select the persisted subtitle language ('off' / a language), else default to the ASS track. */
@@ -168,6 +215,7 @@ export class TvPlayer implements AssSink {
 
   /** Stop playback and tear down captions (e.g. when returning to the channel list). */
   async unload(): Promise<void> {
+    clearTimeout(this.contentTitleTimer);
     this.teardownSubtitles();
     await this.player.unload();
   }
@@ -267,6 +315,7 @@ export class TvPlayer implements AssSink {
   }
 
   async destroy(): Promise<void> {
+    clearTimeout(this.contentTitleTimer);
     this.unsubscribeStyle?.();
     this.unsubscribeStyle = null;
     this.teardownSubtitles();

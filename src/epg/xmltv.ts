@@ -1,3 +1,5 @@
+import { XMLParser } from 'fast-xml-parser';
+
 /** A programme entry parsed from XMLTV. */
 export interface Programme {
   /** Channel id (matches a channel `tvg-id`). */
@@ -7,6 +9,8 @@ export interface Programme {
   /** Stop time, epoch ms. */
   stop: number;
   title: string;
+  /** Secondary title (XMLTV `<sub-title>`). */
+  subTitle?: string;
   desc?: string;
   category?: string;
 }
@@ -39,40 +43,70 @@ export function parseXmltvDate(value: string | null | undefined): number {
   return Date.parse(iso);
 }
 
-/** Parse an XMLTV document (string or Document) into channels + programmes. */
-export function parseXMLTV(input: string | Document): ParsedEpg {
-  const doc =
-    typeof input === 'string'
-      ? new DOMParser().parseFromString(input, 'application/xml')
-      : input;
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  parseTagValue: false, // keep all text as strings (don't coerce "0400" → 400)
+  parseAttributeValue: false,
+  processEntities: true, // decode &amp; &apos; etc.
+  trimValues: true,
+  isArray: (name) => name === 'programme' || name === 'channel' || name === 'display-name',
+});
 
-  const parseError = doc.querySelector('parsererror');
-  if (parseError) throw new Error('Invalid XMLTV: ' + parseError.textContent);
+/** Text content of a fast-xml-parser node: string, `{ '#text', '@_lang' }`, or an array of those. */
+function nodeText(v: unknown): string | undefined {
+  if (v == null) return undefined;
+  if (Array.isArray(v)) return nodeText(v[0]);
+  if (typeof v === 'object') {
+    const t = (v as Record<string, unknown>)['#text'];
+    return t == null ? undefined : String(t).trim() || undefined;
+  }
+  const s = String(v).trim();
+  return s || undefined;
+}
+
+/** `@_src` of an `<icon>` node (object or array). */
+function iconSrc(v: unknown): string | undefined {
+  const first = Array.isArray(v) ? v[0] : v;
+  if (first && typeof first === 'object') {
+    const s = (first as Record<string, unknown>)['@_src'];
+    return s != null ? String(s) : undefined;
+  }
+  return undefined;
+}
+
+/** Parse an XMLTV string into channels + programmes (pure; works in a worker and in Node). */
+export function parseXMLTV(input: string): ParsedEpg {
+  const root = xmlParser.parse(input) as {
+    tv?: { programme?: Array<Record<string, unknown>>; channel?: Array<Record<string, unknown>> };
+  };
+  const tv = root.tv ?? {};
 
   const channels: EpgChannel[] = [];
-  for (const el of Array.from(doc.getElementsByTagName('channel'))) {
-    const id = el.getAttribute('id');
+  for (const c of tv.channel ?? []) {
+    const id = c['@_id'] != null ? String(c['@_id']) : '';
     if (!id) continue;
-    const names = Array.from(el.getElementsByTagName('display-name'))
-      .map((n) => n.textContent?.trim() ?? '')
-      .filter(Boolean);
-    const icon = el.getElementsByTagName('icon')[0]?.getAttribute('src') ?? undefined;
-    channels.push({ id, names, icon });
+    const raw = c['display-name'];
+    const names = (Array.isArray(raw) ? raw : [raw])
+      .map(nodeText)
+      .filter((s): s is string => !!s);
+    channels.push({ id, names, icon: iconSrc(c['icon']) });
   }
 
   const programmes: Programme[] = [];
-  for (const el of Array.from(doc.getElementsByTagName('programme'))) {
-    const channel = el.getAttribute('channel');
-    const start = parseXmltvDate(el.getAttribute('start'));
-    const stop = parseXmltvDate(el.getAttribute('stop'));
+  for (const p of tv.programme ?? []) {
+    const channel = p['@_channel'] != null ? String(p['@_channel']) : '';
+    const start = parseXmltvDate(p['@_start'] as string);
+    const stop = parseXmltvDate(p['@_stop'] as string);
     if (!channel || Number.isNaN(start)) continue;
     programmes.push({
       channel,
       start,
       stop: Number.isNaN(stop) ? start : stop,
-      title: el.getElementsByTagName('title')[0]?.textContent?.trim() ?? '',
-      desc: el.getElementsByTagName('desc')[0]?.textContent?.trim() || undefined,
-      category: el.getElementsByTagName('category')[0]?.textContent?.trim() || undefined,
+      title: nodeText(p['title']) ?? '',
+      subTitle: nodeText(p['sub-title']),
+      desc: nodeText(p['desc']),
+      category: nodeText(p['category']),
     });
   }
 

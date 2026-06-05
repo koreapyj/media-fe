@@ -19,7 +19,6 @@ html, body, #app {
 body {
   background: var(--bg);
   color: var(--fg);
-  font: 15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   overflow: hidden;
 }
 
@@ -90,23 +89,120 @@ a { color: inherit; text-decoration: none; }
   pointer-events: none;
 }
 
-/* Our top bar sits above Shaka's controls; only the back link is interactive. */
-.player-topbar {
-  position: absolute; left: 0; right: 0; top: 0; padding: 1rem 1.25rem; z-index: 3;
-  display: flex; align-items: center; gap: 1rem;
-  background: linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0));
-  pointer-events: none;
-}
-.player-topbar .back {
-  pointer-events: auto; background: rgba(0,0,0,.55); color: #fff;
-  padding: .4rem .7rem; border-radius: 8px; font-size: .9rem;
-}
-.player-topbar .back:hover { background: rgba(0,0,0,.8); }
-.player-topbar .now-playing .title { font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
-.player-topbar .now-playing .epg-now { color: #cdd6e4; font-size: .85rem; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
-
 /* Custom border-type options in the Shaka overflow submenu (reuse Shaka's button styling). */
 .shaka-settings-menu .tv-border-option.tv-chosen span { margin-left: 0; }
 .shaka-settings-menu .tv-border-option.tv-chosen span::before {
   content: '\2713'; display: inline-block; width: 28px;
+}
+
+/* ---- EPG program-guide overlay (番組表) ----
+   Layout constants mirror epgGuide.ts: HEAD_H=52, axis width 60, 120 px per hour. */
+.epg-overlay {
+  position: absolute; inset: 0; z-index: 100;
+  background: var(--bg); color: var(--fg);
+  display: flex; flex-direction: column;
+}
+.epg-header {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: .55rem 1rem; border-bottom: 1px solid #232b38;
+}
+.epg-clock { font-weight: 700; font-variant-numeric: tabular-nums; }
+.epg-close {
+  width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 1rem;
+  background: var(--panel-2); color: var(--fg); border: 1px solid #2c3645;
+}
+.epg-close:hover { border-color: var(--accent); }
+
+.epg-scroll { flex: 1; overflow: auto; }
+.epg-grid { position: relative; display: flex; width: max-content; }
+
+/* Time axis (pinned left). */
+.epg-axis {
+  position: sticky; left: 0; z-index: 3;
+  flex: 0 0 60px; width: 60px;
+  background: var(--bg); border-right: 1px solid #232b38;
+}
+.epg-corner {
+  position: sticky; top: 0; z-index: 1;
+  height: 52px; background: var(--bg); border-bottom: 1px solid #232b38;
+}
+.epg-hour {
+  position: absolute; left: 0; right: 0;
+  transform: translateY(-.6em); text-align: right; padding-right: 8px;
+  color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums;
+}
+
+/* Channel columns. */
+.epg-channels { display: flex; }
+.epg-col { flex: 0 0 170px; width: 170px; border-right: 1px solid #1b2230; }
+.epg-col-head {
+  position: sticky; top: 0; z-index: 2;
+  height: 52px; padding: 6px 8px; box-sizing: border-box;
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  overflow: hidden; cursor: pointer; color: inherit;
+  background: var(--panel); border-bottom: 1px solid #232b38;
+}
+.epg-col-head:hover { background: var(--panel-2); }
+.epg-head-1 { display: flex; align-items: center; gap: 6px; min-height: 18px; }
+.epg-head-img { height: 18px; width: auto; max-width: 44px; object-fit: contain; }
+.epg-chno {
+  flex: 0 0 auto; color: #fff; background: rgba(0,0,0,.5);
+  font-size: .7rem; font-weight: 600; padding: 1px 6px; border-radius: 5px;
+}
+.epg-head-2 {
+  font-weight: 600; font-size: .82rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.epg-col-body {
+  position: relative;
+  background: repeating-linear-gradient(
+    to bottom, transparent 0, transparent 239px, #1b2331 239px, #1b2331 240px);
+}
+
+/* Programme blocks. */
+.epg-prog {
+  position: absolute; left: 2px; right: 2px; overflow: hidden; cursor: pointer;
+  background: var(--panel-2); border: 1px solid #2a3442; border-radius: 6px;
+  padding: 3px 6px; box-sizing: border-box; font-size: .78rem; line-height: 1.25;
+}
+.epg-prog:hover { border-color: var(--accent); }
+.epg-prog.is-now { background: #14385f; border-color: var(--accent); }
+.epg-min {
+  color: var(--muted); font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums;
+}
+.epg-ptitle { font-weight: 600; }
+.epg-psub { display: block; margin-top: 2px; color: var(--muted); font-size: .72rem; }
+.epg-prog.is-now .epg-min { color: #cfe6ff; }
+.epg-prog.is-now .epg-psub { color: #bcd6f0; }
+.epg-prog.is-now .epg-ptitle { color: #fff; }
+
+/* Current-time line across the channel area (left offset = axis width). */
+.epg-nowline {
+  position: absolute; left: 60px; right: 0; height: 0;
+  border-top: 2px solid #ff5252; z-index: 2; pointer-events: none;
+}
+
+/* Programme detail popup. */
+.epg-detail {
+  position: absolute; inset: 0; z-index: 10;
+  background: rgba(0,0,0,.6); display: grid; place-items: center; padding: 1rem;
+}
+.epg-detail-card {
+  position: relative;
+  width: 100%; max-width: 520px; padding: 1.1rem 1.25rem;
+  background: var(--panel); border: 1px solid #2c3645; border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.5);
+}
+.epg-detail-close {
+  position: absolute; top: 10px; right: 10px;
+  width: 28px; height: 28px; border-radius: 8px; cursor: pointer; font-size: .9rem;
+  background: var(--panel-2); color: var(--fg); border: 1px solid #2c3645;
+}
+.epg-detail-close:hover { border-color: var(--accent); }
+.epg-detail-time { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.epg-detail-card h3 { margin: .3rem 0 .5rem; padding-right: 2rem; font-size: 1.15rem; }
+.epg-detail-sub { margin: 0 0 .6rem; color: var(--muted); font-size: .8rem; }
+.epg-detail-desc {
+  margin: 0; color: #cdd6e4; font-size: .9rem;
+  white-space: pre-wrap; max-height: 40vh; overflow: auto;
 }
