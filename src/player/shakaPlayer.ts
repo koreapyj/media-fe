@@ -42,6 +42,8 @@ export class TvPlayer implements AssSink {
   private suppressSubtitlePersist = false;
   /** Reschedule handle for updating Shaka's content title with the current programme. */
   private contentTitleTimer: number | undefined;
+  /** Reused small canvas for frame-change detection while stepping frames. */
+  private diffCanvas: HTMLCanvasElement | null = null;
 
   private constructor(container: HTMLElement, video: HTMLVideoElement) {
     this.container = container;
@@ -70,6 +72,10 @@ export class TvPlayer implements AssSink {
     this.unsubscribeStyle = subtitleStyle.subscribe((s) => this.libass?.setStyleOverrides(s));
     // Reflect the persisted "Subtitle size" so Shaka's menu shows it (no-op feedback via the guard).
     this.player.configure('textDisplayer.fontScaleFactor', subtitleStyle.get().fontScale);
+    // In Picture-in-Picture the <video> moves to the PiP window but the libass canvas stays in the
+    // page; flag the container so CSS can hide the stray subtitle overlay while in PiP.
+    this.video.addEventListener('enterpictureinpicture', () => this.container.classList.add('pip'));
+    this.video.addEventListener('leavepictureinpicture', () => this.container.classList.remove('pip'));
   }
 
   /** Create the player, its video/container, and the Shaka UI overlay. */
@@ -169,6 +175,115 @@ export class TvPlayer implements AssSink {
       this.contentTitleTimer = window.setTimeout(run, delay);
     };
     void run();
+  }
+
+  // --- Player actions (driven by keyboard shortcuts) ---
+
+  toggleMute(): void {
+    this.video.muted = !this.video.muted;
+  }
+
+  togglePlay(): void {
+    if (this.video.paused) void this.video.play();
+    else this.video.pause();
+  }
+
+  /**
+   * Pause and step one frame (dir = +1 forward / -1 back). Frame rate isn't reliably known, so nudge
+   * `currentTime` by a small delta and re-check the rendered frame, repeating until it actually changes
+   * (capped). On a fully static scene the pixels won't change, so the cap bounds how far we move.
+   */
+  async stepFrame(dir: 1 | -1): Promise<void> {
+    this.video.pause();
+    const step = dir / 60;
+    // Nudge currentTime directly (the browser bounds it to the seekable range — don't pre-clamp, which
+    // can no-op or jump backward against a live seek range). Capped so static content can't loop forever.
+    for (let i = 0; i < 30; i++) {
+      const before = this.frameFingerprint();
+      this.video.currentTime += step;
+      await new Promise<void>((resolve) =>
+        this.video.addEventListener('seeked', () => resolve(), { once: true }),
+      );
+      if (this.frameFingerprint() !== before) break;
+    }
+  }
+
+  /** A dataURL of the current frame, used to detect when the frame changes. */
+  private frameFingerprint(): string {
+    const v = this.video;
+    if (!v.videoWidth) return '';
+    const c = (this.diffCanvas ??= document.createElement('canvas'));
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    const ctx = c.getContext('2d');
+    if (!ctx) return '';
+    try {
+      ctx.drawImage(v, 0, 0);
+      return c.toDataURL();
+    } catch {
+      return '';
+    }
+  }
+
+  /** Seek by `seconds` (clamped to the seekable range); optionally pause first. */
+  seekBy(seconds: number, pause: boolean): void {
+    if (pause) this.video.pause();
+    this.seekTo(this.video.currentTime + seconds);
+  }
+
+  private seekTo(time: number): void {
+    const { start, end } = this.player.seekRange();
+    this.video.currentTime = Math.max(start, Math.min(end, time));
+  }
+
+  goToLive(): void {
+    if (this.player.isLive()) this.player.goToLive();
+  }
+
+  toggleFullscreen(): void {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void this.container.requestFullscreen();
+  }
+
+  /** Toggle the first closed-caption track on/off (mirrors the captions button). */
+  toggleCaptions(): void {
+    const tracks = this.player.getTextTracks();
+    if (tracks.some((t) => t.active)) {
+      this.player.selectTextTrack(null);
+      return;
+    }
+    const cc = tracks.find(isAssTrack) ?? tracks[0];
+    if (cc) this.player.selectTextTrack(cc);
+  }
+
+  /**
+   * Copy the current frame to the clipboard as PNG. Unless `videoOnly`, composites the libass subtitle
+   * overlay on top when captions are active. Requires a secure context + Clipboard API.
+   */
+  async captureToClipboard(videoOnly: boolean): Promise<void> {
+    const v = this.video;
+    if (!v.videoWidth || !v.videoHeight) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    try {
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      const subsActive = this.player.getTextTracks().some((t) => t.active);
+      if (!videoOnly && subsActive) {
+        const sub = this.container.querySelector(
+          '.libassjs-canvas-parent canvas',
+        ) as HTMLCanvasElement | null;
+        if (sub?.width) ctx.drawImage(sub, 0, 0, canvas.width, canvas.height);
+      }
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob failed'))), 'image/png'),
+      );
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    } catch (err) {
+      console.warn('Frame capture failed', err);
+    }
   }
 
   /** Select the persisted subtitle language ('off' / a language), else default to the ASS track. */

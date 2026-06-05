@@ -1,13 +1,14 @@
 import './styles.css';
 import 'shaka-player/dist/controls.css';
 import { PLAYLIST_URL, EPG_URL_OVERRIDE } from './config';
-import { loadPlaylist } from './playlist/m3u';
+import { loadPlaylist, compareChno } from './playlist/m3u';
 import type { Channel } from './playlist/types';
 import { ensureEpg, refreshEpg, onEpgUpdated } from './epg/epg';
 import { Router, hrefFor, type Route } from './router';
 import { renderChannelList } from './ui/channelList';
 import { createPlayerView } from './ui/playerView';
 import { createEpgOverlay, setEpgToggle } from './ui/epgGuide';
+import { createChannelOsd, type ChannelOsd } from './ui/channelOsd';
 import { TvPlayer } from './player/shakaPlayer';
 
 class App {
@@ -20,6 +21,8 @@ class App {
   private epgUrl: string | undefined;
   private nav = 0; // generation token to ignore stale async navigations
   private readonly router: Router;
+  private channelsByNumber: Channel[] = []; // channels with a number, ordered numerically
+  private osd: ChannelOsd | null = null;
 
   constructor(private readonly root: HTMLElement) {
     this.router = new Router((r) => void this.onRoute(r));
@@ -31,6 +34,11 @@ class App {
       const playlist = await loadPlaylist(PLAYLIST_URL);
       this.channels = playlist.channels;
       this.byXUrl = new Map(this.channels.map((c) => [c.xUrl, c]));
+      this.channelsByNumber = this.channels
+        .filter((c) => c.chno != null)
+        .sort((a, b) => compareChno(a.chno, b.chno));
+      this.osd = createChannelOsd(this.root, this.channels, (c) => void this.showChannel(c));
+      this.installShortcuts();
       // Load/refresh EPG in the background (off-thread worker); the UI fills in as data lands.
       this.epgUrl = EPG_URL_OVERRIDE ?? playlist.epgUrl;
       void ensureEpg(this.epgUrl);
@@ -72,6 +80,9 @@ class App {
       }
       if (gen !== this.nav) return;
       this.currentChannel = channel;
+      // Reflect the channel in the URL. Skip when we got here from the router (URL already matches).
+      const href = hrefFor({ kind: 'channel', xUrl: channel.xUrl });
+      if (location.pathname !== href) history.pushState(null, '', href);
       this.closeEpg();
       this.mount(
         createPlayerView(channel, this.channels, this.tvPlayer.container, (ch) =>
@@ -82,6 +93,67 @@ class App {
     } catch (err) {
       if (gen === this.nav) console.error('Playback failed', err);
     }
+  }
+
+  /** Attach the global keyboard handler (browser vs installed-PWA key sets). */
+  private installShortcuts(): void {
+    // Capture phase so handled keys are consumed before focused Shaka controls also act on them
+    // (e.g. the focused fullscreen button would otherwise re-toggle fullscreen on Enter).
+    document.addEventListener('keydown', (e) => this.onKeyDown(e), true);
+  }
+
+  private onKeyDown(e: KeyboardEvent): void {
+    // Active only while watching a channel; suspended while the guide overlay owns the keyboard.
+    const tv = this.tvPlayer;
+    if (!tv || !this.currentChannel || this.epgOverlay) return;
+
+    const isDigit = (e.key >= '0' && e.key <= '9') || e.key === '.';
+    const browser = window.matchMedia('(display-mode: browser),(display-mode: fullscreen)').matches;
+    let handled = true;
+
+    if (browser) {
+      switch (e.key) {
+        case 'm': tv.toggleMute(); break;
+        case 'h': if (e.altKey) tv.toggleCaptions(); else handled = false; break;
+        case 'c': if (e.ctrlKey) void tv.captureToClipboard(e.altKey); else handled = false; break;
+        case 'd': void tv.stepFrame(-1); break;
+        case 'f': void tv.stepFrame(1); break;
+        case ' ': tv.togglePlay(); break;
+        case 'Enter': tv.toggleFullscreen(); break;
+        case 'Home': tv.goToLive(); break;
+        case 'ArrowLeft': tv.seekBy(-5, true); break;
+        case 'ArrowRight': tv.seekBy(5, false); break;
+        case 'ArrowUp': this.tuneRelative(1); break;
+        case 'ArrowDown': this.tuneRelative(-1); break;
+        default: if (isDigit) this.osd?.pressKey(e.key); else handled = false;
+      }
+    } else {
+      switch (e.key) {
+        case 'Home': tv.goToLive(); break;
+        case 'MediaSkipBackward': tv.seekBy(-5, true); break;
+        case 'MediaSkipForward': tv.seekBy(5, false); break;
+        case 'ChannelUp': this.tuneRelative(1); break;
+        case 'ChannelDown': this.tuneRelative(-1); break;
+        case 'ClosedCaptionToggle': tv.toggleCaptions(); break;
+        case 'Info': this.osd?.pressKey('.'); break;
+        default: if (isDigit) this.osd?.pressKey(e.key); else handled = false;
+      }
+    }
+
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  /** Tune to the next/previous channel by number (wrapping around). */
+  private tuneRelative(delta: 1 | -1): void {
+    const ring = this.channelsByNumber;
+    const n = ring.length;
+    if (!n) return;
+    const idx = this.currentChannel ? ring.indexOf(this.currentChannel) : -1;
+    const next = idx === -1 ? (delta > 0 ? 0 : n - 1) : ((idx + delta) % n + n) % n;
+    void this.showChannel(ring[next]);
   }
 
   /** Re-download the EPG at the top of each hour (off-thread; the open overlay live-updates on done). */

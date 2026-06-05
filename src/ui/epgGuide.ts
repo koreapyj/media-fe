@@ -218,7 +218,7 @@ export function createEpgOverlay(
     if (ch.chno != null) {
       const chno = document.createElement('span');
       chno.className = 'epg-chno';
-      chno.textContent = String(ch.chno);
+      chno.textContent = ch.chno;
       line1.appendChild(chno);
     }
     if (ch.logo) {

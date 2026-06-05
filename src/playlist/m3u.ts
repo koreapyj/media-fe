@@ -1,5 +1,23 @@
 import type { Channel, Playlist } from './types';
 
+/**
+ * Order two channel numbers numerically, segment by segment (so `11.2` < `11.10` and `011` == `11`).
+ * A missing number sorts last.
+ */
+export function compareChno(a?: string, b?: string): number {
+  if (a == null) return b == null ? 0 : 1;
+  if (b == null) return -1;
+  const pa = a.split('.');
+  const pb = b.split('.');
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = Number(pa[i] ?? 0);
+    const y = Number(pb[i] ?? 0);
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
 /** Parse the `key="value"` (and bare `key=value`) attribute pairs found on EXT lines. */
 function parseAttributes(input: string): Record<string, string> {
   const attrs: Record<string, string> = {};
@@ -54,15 +72,14 @@ export function parseM3U(text: string): Playlist {
       const attrPart = head.replace(/^#EXTINF:\s*-?\d+(\.\d+)?/, '');
       const attrs = parseAttributes(attrPart);
 
-      const chnoRaw = attrs['tvg-chno'] ?? attrs['channel-number'];
-      const chno = chnoRaw != null && chnoRaw !== '' ? Number(chnoRaw) : undefined;
+      const chnoRaw = (attrs['tvg-chno'] ?? attrs['channel-number'] ?? '').trim();
 
       pending = {
         name: name || attrs['tvg-name'] || 'Unnamed',
         streamUrl: '',
         xUrl: attrs['x-url'] ?? '',
         tvgId: attrs['tvg-id'] || undefined,
-        chno: Number.isFinite(chno) ? chno : undefined,
+        chno: chnoRaw || undefined,
         logo: attrs['tvg-logo'] || undefined,
         thumb: attrs['thumb'] || undefined,
       };

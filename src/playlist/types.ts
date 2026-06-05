@@ -8,8 +8,8 @@ export interface Channel {
   xUrl: string;
   /** `tvg-id`: EPG channel id used to look up programmes (optional). */
   tvgId?: string;
-  /** `tvg-chno`: channel number (optional). */
-  chno?: number;
+  /** `tvg-chno`: channel number, kept as a string (may include a `.`-separated subpart). */
+  chno?: string;
   /** `tvg-logo`: channel logo image URL (optional). */
   logo?: string;
   /** `thumb`: channel thumbnail image URL (optional). */

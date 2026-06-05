@@ -115,6 +115,9 @@ export class LibassRenderer {
     this.buffered = [];
     this.octopus.setTrack(`${this.header ?? ''}\n[Events]\n`);
     this.eventCount = 0;
+    // setTrack reloads the header's raw styles, wiping the resolved Default fix + user overrides;
+    // re-apply them so re-enabling captions keeps the saved size/border.
+    this.applyStyleOverrides();
   }
 
   /** Tear down the instance on a discontinuity; a fresh setHeader() recreates it. */
@@ -230,7 +233,6 @@ export class LibassRenderer {
     props.FontSize = (Number(base.FontSize) || 0) * (this.overrides.fontScale || 1);
 
     const outline = Number(base.Outline) || 0;
-    const shadow = Number(base.Shadow) || 0;
     const backColour = Number(base.BackColour) || 0;
     const outlineColour = Number(base.OutlineColour) || 0;
     props.OutlineColour = withAlpha(outlineColour,0x0);
@@ -238,13 +240,13 @@ export class LibassRenderer {
     switch (this.overrides.borderType) {
       case 'outline': // outline only
         props.BorderStyle = 1;
-        props.Outline = 1;
+        props.Outline = 2;
         props.Shadow = 0;
         break;
       case 'shadow': // drop shadow only
         props.BorderStyle = 1;
         props.Outline = 0;
-        props.Shadow = shadow || 2;
+        props.Shadow = 1;
         break;
       case 'opaquebox': // fully opaque box
         props.BorderStyle = 3;
