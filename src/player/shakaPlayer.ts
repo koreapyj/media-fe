@@ -4,6 +4,7 @@ import { LibassRenderer } from './libassRenderer';
 import { ASS_MIME_TYPES, registerAssParser, setAssSink, type AssSink } from './assTextParser';
 import { subtitleStyle } from './subtitleStyle';
 import { registerBorderTypeMenu } from '../ui/borderTypeMenu';
+import { loadJSON, saveJSON } from '../storage';
 
 function isAssTrack(t: shaka.extern.TextTrack): boolean {
   const mime = (t.mimeType ?? '').toLowerCase();
@@ -34,6 +35,8 @@ export class TvPlayer implements AssSink {
   /** boundary segment URI -> the init.ass URI declared after its `#EXT-X-DISCONTINUITY`. */
   private discontinuityBoundaries = new Map<string, string>();
   private unsubscribeStyle: (() => void) | null = null;
+  /** Skip persisting subtitle-language changes during programmatic (restore) selection. */
+  private suppressSubtitlePersist = false;
 
   private constructor(container: HTMLElement, video: HTMLVideoElement) {
     this.container = container;
@@ -47,8 +50,11 @@ export class TvPlayer implements AssSink {
     this.player.addEventListener('error', (e) => {
       console.error('Shaka error', (e as CustomEvent).detail);
     });
-    // Mirror UI caption changes onto libass (e.g. clear the overlay when captions are turned off).
-    this.player.addEventListener('textchanged', () => this.syncSubtitleState());
+    // Mirror UI caption changes onto libass (clear when off) and remember the user's selection.
+    this.player.addEventListener('textchanged', () => {
+      this.syncSubtitleState();
+      this.persistSubtitleSelection();
+    });
     this.player.addEventListener('texttrackvisibility', () => this.syncSubtitleState());
     // Wire Shaka UI "Subtitle size" (textDisplayer.fontScaleFactor) into our style store.
     this.player.addEventListener('configurationchanged', () => {
@@ -57,6 +63,8 @@ export class TvPlayer implements AssSink {
     });
     // Apply any style override (font scale / border type) to the active libass renderer.
     this.unsubscribeStyle = subtitleStyle.subscribe((s) => this.libass?.setStyleOverrides(s));
+    // Reflect the persisted "Subtitle size" so Shaka's menu shows it (no-op feedback via the guard).
+    this.player.configure('textDisplayer.fontScaleFactor', subtitleStyle.get().fontScale);
   }
 
   /** Create the player, its video/container, and the Shaka UI overlay. */
@@ -106,11 +114,31 @@ export class TvPlayer implements AssSink {
     this.libass.setStyleOverrides(subtitleStyle.get()); // seed current size/border overrides
     setAssSink(this); // TvPlayer mediates discontinuity handling before forwarding to libass
 
+    // Restore the saved subtitle selection without persisting our own (programmatic) choice.
+    this.suppressSubtitlePersist = true;
     await this.player.load(channel.streamUrl);
+    this.applySubtitleSelection();
+    this.suppressSubtitlePersist = false;
+  }
 
+  /** Select the persisted subtitle language ('off' / a language), else default to the ASS track. */
+  private applySubtitleSelection(): void {
+    const pref = loadJSON<string | null>('subtitleLang', null);
+    if (pref === 'off') {
+      this.player.selectTextTrack(null);
+      return;
+    }
     const tracks = this.player.getTextTracks();
-    const ass = tracks.find(isAssTrack) ?? tracks[0];
-    if (ass) this.player.selectTextTrack(ass);
+    const byLang = pref ? tracks.find((t) => t.language === pref) : undefined;
+    const track = byLang ?? tracks.find(isAssTrack) ?? tracks[0];
+    if (track) this.player.selectTextTrack(track);
+  }
+
+  /** Remember the current subtitle selection (active track language, or 'off'). */
+  private persistSubtitleSelection(): void {
+    if (this.suppressSubtitlePersist) return;
+    const active = this.player.getTextTracks().find((t) => t.active);
+    saveJSON('subtitleLang', active ? active.language : 'off');
   }
 
   // --- AssSink (called by the registered text parser) ---

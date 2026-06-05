@@ -1,11 +1,13 @@
 /**
- * In-memory store for user subtitle-style overrides applied to libass.
+ * Persisted store for user subtitle-style overrides applied to libass.
  *
  * - `fontScale` mirrors Shaka UI's "Subtitle size" (`textDisplayer.fontScaleFactor`).
  * - `borderType` is driven by our custom border-type menu.
  *
- * Not persisted yet; `load`/`save` are the single seam to add localStorage later.
+ * State is loaded from (and saved to) localStorage so it survives reloads/channel switches.
  */
+import { loadJSON, saveJSON } from '../storage';
+
 export type BorderType = 'default' | 'outline' | 'shadow' | 'opaquebox';
 
 export interface SubtitleStyleState {
@@ -15,10 +17,25 @@ export interface SubtitleStyleState {
 
 type Listener = (state: SubtitleStyleState) => void;
 
-const state: SubtitleStyleState = { fontScale: 1, borderType: 'default' };
+const STORAGE_KEY = 'subtitleStyle';
+const BORDER_TYPES: BorderType[] = ['default', 'outline', 'shadow', 'opaquebox'];
+
+function loadState(): SubtitleStyleState {
+  const saved = loadJSON<Partial<SubtitleStyleState>>(STORAGE_KEY, {});
+  const fontScale =
+    typeof saved.fontScale === 'number' && Number.isFinite(saved.fontScale) && saved.fontScale > 0
+      ? saved.fontScale
+      : 1;
+  const borderType =
+    saved.borderType && BORDER_TYPES.includes(saved.borderType) ? saved.borderType : 'default';
+  return { fontScale, borderType };
+}
+
+const state: SubtitleStyleState = loadState();
 const listeners = new Set<Listener>();
 
 function notify(): void {
+  saveJSON(STORAGE_KEY, state);
   for (const cb of listeners) cb({ ...state });
 }
 
