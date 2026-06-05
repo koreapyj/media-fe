@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>TV Player</title>
+    <script>
+      /*
+       * Runtime base auto-detection bootstrap.
+       *
+       * One static build must run under ANY nginx subpath with no rebuild. nginx rewrites unknown
+       * subpaths to index.html (try_files), so on a deep-link refresh the document is served from a
+       * deep path and we cannot know the mount prefix ahead of time. We discover it by probing
+       * upward from the current path for Vite's manifest.json (emitted only at the build root),
+       * then set <base href>, expose window.__APP_BASE__, and inject the hashed entry + its CSS.
+       */
+      (function () {
+        var path = location.pathname;
+        var dir = path.charAt(path.length - 1) === '/'
+          ? path
+          : path.slice(0, path.lastIndexOf('/') + 1);
+
+        // Candidate bases, most-specific first: e.g. ['/tv/news/', '/tv/', '/'].
+        var candidates = [];
+        if (path !== dir) candidates.push(path + '/'); // app mounted exactly at a no-slash path
+        var cur = dir;
+        while (true) {
+          candidates.push(cur);
+          if (cur === '/' || cur === '') break;
+          cur = cur.slice(0, cur.lastIndexOf('/', cur.length - 2) + 1);
+        }
+
+        function isViteManifest(m) {
+          if (!m || typeof m !== 'object') return false;
+          for (var k in m) if (m[k] && m[k].isEntry) return true;
+          return false;
+        }
+
+        function start(base, manifest) {
+          window.__APP_BASE__ = base;
+          var baseEl = document.createElement('base');
+          baseEl.href = base;
+          document.head.insertBefore(baseEl, document.head.firstChild);
+
+          var entry = null;
+          for (var k in manifest) if (manifest[k] && manifest[k].isEntry) { entry = manifest[k]; break; }
+          if (!entry) return fail('manifest has no entry');
+
+          (entry.css || []).forEach(function (href) {
+            var link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = base + href;
+            document.head.appendChild(link);
+          });
+          var s = document.createElement('script');
+          s.type = 'module';
+          s.src = base + entry.file;
+          document.body.appendChild(s);
+        }
+
+        function devFallback() {
+          // No manifest found (vite dev server). Served at root; load the TS entry directly.
+          window.__APP_BASE__ = '/';
+          var s = document.createElement('script');
+          s.type = 'module';
+          s.src = '/src/main.ts';
+          document.body.appendChild(s);
+        }
+
+        function fail(msg) {
+          document.body.innerHTML =
+            '<p style="font:16px/1.5 system-ui,sans-serif;padding:2rem;color:#eee">' +
+            'Failed to start the player: ' + msg + '</p>';
+        }
+
+        var i = 0;
+        (function tryNext() {
+          if (i >= candidates.length) return devFallback();
+          var base = candidates[i++];
+          fetch(base + 'manifest.json', { cache: 'no-store' })
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(0); })
+            .then(function (m) { if (isViteManifest(m)) start(base, m); else tryNext(); })
+            .catch(function () { tryNext(); });
+        })();
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>
