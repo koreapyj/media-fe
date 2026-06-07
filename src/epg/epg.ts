@@ -1,8 +1,12 @@
 import type { Programme } from './xmltv';
 import { getEpgMeta, getProgrammesAround, getProgrammesInRange, removeSourcesNotIn } from './db';
 
-/** Longest programme we expect, so a still-running programme that started before the window is caught. */
-const GUIDE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6 hours
+/**
+ * Longest programme we expect, so a still-running programme that started before the window is caught.
+ * Must cover all-day "marathon" blocks (e.g. ABEMA 一挙), which can run the better part of a day; an
+ * undersized lookback drops the current programme and leaves the column blank.
+ */
+const GUIDE_LOOKBACK_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /** Re-download the EPG only if the cached copy is older than this (ms) or from another source. */
 const REFRESH_AFTER_MS = 6 * 60 * 60 * 1000; // 6 hours
