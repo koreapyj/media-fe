@@ -133,10 +133,11 @@ const clockFmt = (ms: number) =>
     weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   });
 
 const hhmm = (ms: number) =>
-  new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
 /** Two-digit hour for the time-axis legend (no minutes). */
 const hh = (ms: number) => String(new Date(ms).getHours()).padStart(2, '0');

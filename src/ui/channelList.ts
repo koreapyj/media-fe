@@ -4,7 +4,7 @@ import { hrefFor } from '../router';
 
 function timeRange(start: number, stop: number): string {
   const fmt = (t: number) =>
-    new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
   return `${fmt(start)}–${fmt(stop)}`;
 }
 
