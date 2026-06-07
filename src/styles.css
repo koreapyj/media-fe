@@ -239,6 +239,13 @@ a { color: inherit; text-decoration: none; }
   background: var(--panel); border-bottom: 1px solid #232b38;
 }
 .epg-col-head:hover { background: var(--panel-2); }
+/* Currently-watched channel: tint the whole column + accent its header. */
+.epg-col.is-current { background: rgba(34, 124, 224, .08); }
+.epg-col.is-current .epg-col-head {
+  background: var(--accent); color: #fff; border-bottom-color: var(--accent);
+}
+.epg-col.is-current .epg-col-head:hover { background: var(--accent); }
+.epg-col.is-current .epg-chno { background: rgba(0,0,0,.35); }
 .epg-head-1 { display: flex; align-items: center; gap: 6px; min-height: 18px; }
 .epg-head-img { height: 18px; width: auto; max-width: 44px; object-fit: contain; }
 .epg-chno {

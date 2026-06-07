@@ -316,6 +316,7 @@ export function createEpgOverlay(
   function buildColumn(ch: Channel): void {
     const col = document.createElement('div');
     col.className = 'epg-col';
+    if (current && ch.xUrl === current.xUrl) col.classList.add('is-current');
 
     // Header is a link to the channel; clicking tunes in place (no permalink change).
     const head = document.createElement('a');
