@@ -2,5 +2,8 @@
   "playlists": [
     "channels.m3u",
     "https://example.com/another-playlist.m3u"
-  ]
+  ],
+  "overrides": {
+    "channels.m3u": { "availabilityWindow": 1800 }
+  }
 }

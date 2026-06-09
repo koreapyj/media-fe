@@ -120,6 +120,13 @@ export async function loadPlaylist(url: string): Promise<Playlist> {
   return parseM3U(await res.text());
 }
 
+/** One playlist to load, with optional per-playlist options from the config manifest. */
+export interface PlaylistSource {
+  url: string;
+  /** Live seek-window override in seconds (→ Shaka `manifest.availabilityWindowOverride`). */
+  availabilityWindow?: number;
+}
+
 /** The merged result of loading several playlists. */
 export interface MergedPlaylists {
   channels: Channel[];
@@ -133,12 +140,12 @@ export interface MergedPlaylists {
  * only if every playlist fails. A final uniqueness pass guarantees route slugs stay distinct across
  * playlists (collisions aren't expected, but must never break routing).
  */
-export async function loadPlaylists(urls: string[]): Promise<MergedPlaylists> {
-  const results = await Promise.allSettled(urls.map(loadPlaylist));
-  const loaded: Array<{ url: string; playlist: Playlist }> = [];
+export async function loadPlaylists(sources: PlaylistSource[]): Promise<MergedPlaylists> {
+  const results = await Promise.allSettled(sources.map((s) => loadPlaylist(s.url)));
+  const loaded: Array<{ source: PlaylistSource; playlist: Playlist }> = [];
   results.forEach((r, i) => {
-    if (r.status === 'fulfilled') loaded.push({ url: urls[i], playlist: r.value });
-    else console.warn(`Skipping playlist ${urls[i]}:`, r.reason);
+    if (r.status === 'fulfilled') loaded.push({ source: sources[i], playlist: r.value });
+    else console.warn(`Skipping playlist ${sources[i].url}:`, r.reason);
   });
   if (!loaded.length) throw new Error('No playlists could be loaded');
 
@@ -148,15 +155,15 @@ export async function loadPlaylists(urls: string[]): Promise<MergedPlaylists> {
 
   const seen = new Set<string>();
   const channels: Channel[] = [];
-  for (const { url, playlist } of loaded) {
+  for (const { source, playlist } of loaded) {
     // Category = the `#PLAYLIST:` name, else the file name without extension.
-    const category = playlist.name || fileStem(url);
+    const category = playlist.name || fileStem(source.url);
     for (const ch of playlist.channels) {
       let xUrl = ch.xUrl;
       let n = 2;
       while (seen.has(xUrl)) xUrl = `${ch.xUrl}-${n++}`;
       seen.add(xUrl);
-      channels.push({ ...ch, xUrl, playlist: category });
+      channels.push({ ...ch, xUrl, playlist: category, availabilityWindow: source.availabilityWindow });
     }
   }
 

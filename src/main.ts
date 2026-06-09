@@ -1,7 +1,7 @@
 import './styles.css';
 import 'shaka-player/dist/controls.css';
 import { CONFIG_URL } from './config';
-import { loadPlaylists, compareChno } from './playlist/m3u';
+import { loadPlaylists, compareChno, type PlaylistSource } from './playlist/m3u';
 import type { Channel } from './playlist/types';
 import { ensureEpg, refreshEpg, onEpgUpdated } from './epg/epg';
 import { Router, hrefFor, type Route } from './router';
@@ -31,8 +31,8 @@ class App {
   async start(): Promise<void> {
     this.root.innerHTML = '<div class="loading">Loading playlist…</div>';
     try {
-      const playlists = await this.loadManifest();
-      const { channels, epgUrls } = await loadPlaylists(playlists);
+      const sources = await this.loadManifest();
+      const { channels, epgUrls } = await loadPlaylists(sources);
       this.channels = channels;
       this.byXUrl = new Map(this.channels.map((c) => [c.xUrl, c]));
       this.channelsByNumber = this.channels
@@ -52,16 +52,33 @@ class App {
     }
   }
 
-  /** Fetch the JSON manifest listing the playlist URLs (the only source — no fallback). */
-  private async loadManifest(): Promise<string[]> {
+  /**
+   * Fetch the JSON manifest listing the playlists (the only source — no fallback). Shape:
+   * `{ "playlists": ["a.m3u", …], "overrides": { "a.m3u": { "availabilityWindow": 1800 } } }`.
+   * `overrides` is keyed by the playlist URL and is optional; `availabilityWindow` is the
+   * per-playlist live seek window in seconds. Malformed entries are dropped; empty is fatal.
+   */
+  private async loadManifest(): Promise<PlaylistSource[]> {
     const res = await fetch(CONFIG_URL, { cache: 'no-store' });
     if (!res.ok) throw new Error(`Failed to load config (${res.status}) from ${CONFIG_URL}`);
-    const manifest = (await res.json()) as { playlists?: unknown };
-    const playlists = Array.isArray(manifest.playlists)
+    const manifest = (await res.json()) as { playlists?: unknown; overrides?: unknown };
+    const urls = Array.isArray(manifest.playlists)
       ? manifest.playlists.filter((u): u is string => typeof u === 'string' && u !== '')
       : [];
-    if (!playlists.length) throw new Error('Config lists no playlists');
-    return playlists;
+    if (!urls.length) throw new Error('Config lists no playlists');
+
+    const overrides =
+      manifest.overrides && typeof manifest.overrides === 'object'
+        ? (manifest.overrides as Record<string, { availabilityWindow?: unknown }>)
+        : {};
+    return urls.map((url) => {
+      const win = overrides[url]?.availabilityWindow;
+      return {
+        url,
+        availabilityWindow:
+          typeof win === 'number' && Number.isFinite(win) && win > 0 ? win : undefined,
+      };
+    });
   }
 
   private async onRoute(route: Route): Promise<void> {

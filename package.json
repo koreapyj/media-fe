@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "verify": "node scripts/verify-bootstrap.mjs && node scripts/verify-ass-timing.mjs && node scripts/verify-xmltv.mjs"
+    "verify": "node scripts/verify-bootstrap.mjs && node scripts/verify-ass-timing.mjs && node scripts/verify-xmltv.mjs && node scripts/verify-hls-dvr.mjs"
   },
   "keywords": [],
   "author": "",

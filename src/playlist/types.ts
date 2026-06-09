@@ -16,6 +16,12 @@ export interface Channel {
   thumb?: string;
   /** Category = the playlist this channel came from (assigned when merging playlists). */
   playlist?: string;
+  /**
+   * Per-playlist live seek-window override, in seconds (from the config manifest). When set, it
+   * becomes Shaka's `manifest.availabilityWindowOverride` so scrolled-off segments are retained and
+   * the DVR/seek range expands. Undefined = use Shaka's native window.
+   */
+  availabilityWindow?: number;
 }
 
 /** The full parsed playlist. */

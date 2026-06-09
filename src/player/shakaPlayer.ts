@@ -1,6 +1,7 @@
 import shaka from 'shaka-player/dist/shaka-player.ui.js';
 import type { Channel } from '../playlist/types';
 import { LibassRenderer } from './libassRenderer';
+import { HlsWindowAccumulator } from './hlsDvr';
 import { ASS_MIME_TYPES, registerAssParser, setAssSink, type AssSink } from './assTextParser';
 import { subtitleStyle } from './subtitleStyle';
 import { registerBorderTypeMenu } from '../ui/borderTypeMenu';
@@ -39,6 +40,10 @@ export class TvPlayer implements AssSink {
   private fetchedHeaders = new Set<string>();
   /** boundary segment URI -> the init.ass URI declared after its `#EXT-X-DISCONTINUITY`. */
   private discontinuityBoundaries = new Map<string, string>();
+  /** Per-media-playlist DVR accumulators (keyed by playlist URL); active only for opted-in channels. */
+  private dvrAccumulators = new Map<string, HlsWindowAccumulator>();
+  /** Current channel's DVR seek-window in seconds, or null when it doesn't opt in. */
+  private dvrWindowSec: number | null = null;
   private unsubscribeStyle: (() => void) | null = null;
   /** Skip persisting subtitle-language changes during programmatic (restore) selection. */
   private suppressSubtitlePersist = false;
@@ -56,10 +61,8 @@ export class TvPlayer implements AssSink {
     this.video = video;
     this.fullscreenTarget = fullscreenTarget;
     this.player = new shaka.Player();
-    // Our ASS parser returns no cues (libass draws the overlay), so Shaka UI's default text
-    // displayer renders nothing — no need to override textDisplayFactory.
-    // Keep a subtitle hiccup from ever killing video playback with an uncaught error.
     this.player.configure('manifest.hls.ignoreTextStreamFailures', true);
+    // this.player.configure('manifest.hls.sequenceMode', false);
     this.setupSubtitlePipeline();
     this.player.addEventListener('error', (e) => {
       console.error('Shaka error', (e as CustomEvent).detail);
@@ -145,6 +148,12 @@ export class TvPlayer implements AssSink {
     this.libass = new LibassRenderer(this.video);
     this.libass.setStyleOverrides(subtitleStyle.get()); // seed current size/border overrides
     setAssSink(this); // TvPlayer mediates discontinuity handling before forwarding to libass
+
+    // Expand the live DVR/seek window for opted-in playlists: the HlsWindowAccumulator retains
+    // scrolled-off segments and availabilityWindowOverride keeps Shaka from evicting them. Both are
+    // needed; the override resets to NaN for channels that don't opt in (the player is reused).
+    this.dvrWindowSec = channel.availabilityWindow ?? null;
+    this.player.configure('manifest.availabilityWindowOverride', channel.availabilityWindow ?? NaN);
 
     // Restore the saved subtitle selection without persisting our own (programmatic) choice.
     this.suppressSubtitlePersist = true;
@@ -354,6 +363,7 @@ export class TvPlayer implements AssSink {
     setAssSink(null);
     this.fetchedHeaders.clear();
     this.discontinuityBoundaries.clear();
+    this.dvrAccumulators.clear();
     if (this.libass) {
       this.libass.dispose();
       this.libass = null;
@@ -382,8 +392,37 @@ export class TvPlayer implements AssSink {
         if (path.endsWith('.ass')) response.headers['content-type'] = 'text/x-ssa';
         return;
       }
-      if (type === RequestType.MANIFEST) this.rewriteAssPlaylist(response);
+      if (type === RequestType.MANIFEST) this.handleManifestResponse(response);
     });
+  }
+
+  /**
+   * Dispatch a MANIFEST response: the ASS subtitle media playlist goes to `rewriteAssPlaylist`; for
+   * an opted-in channel, a regular media playlist is run through its `HlsWindowAccumulator` to retain
+   * scrolled-off segments and deepen the seek window. Master playlists pass through untouched.
+   */
+  private handleManifestResponse(response: shaka.extern.Response): void {
+    const bytes =
+      response.data instanceof ArrayBuffer
+        ? new Uint8Array(response.data)
+        : new Uint8Array(response.data.buffer, response.data.byteOffset, response.data.byteLength);
+    const text = new TextDecoder().decode(bytes);
+
+    if (/#EXT-X-MAP:URI="[^"]+\.ass"/i.test(text)) {
+      this.rewriteAssPlaylist(response);
+      return;
+    }
+    if (this.dvrWindowSec == null) return;
+    if (/^#EXT-X-STREAM-INF/im.test(text)) return; // master playlist
+    if (!/^#EXTINF:/im.test(text)) return; // not a media playlist
+
+    const key = (response.uri || response.originalUri || '').split('?')[0];
+    let acc = this.dvrAccumulators.get(key);
+    if (!acc) {
+      acc = new HlsWindowAccumulator(this.dvrWindowSec);
+      this.dvrAccumulators.set(key, acc);
+    }
+    response.data = new TextEncoder().encode(acc.ingest(text)).buffer;
   }
 
   /**
