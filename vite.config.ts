@@ -1,19 +1,36 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 
-// Relative base so a single build runs under ANY nginx subpath. The inline bootstrap in
-// index.html probes upward for manifest.json to discover the real mount prefix at runtime,
-// sets <base href>, and loads the hashed entry from it (see index.html / src/base.ts).
+// Bake the hashed entry chunk (JS + its CSS) into index.html's bootstrap at build time, so we don't
+// emit a Vite manifest.json. In dev there is no bundle, so the tokens are left intact.
+function inlineEntry(): Plugin {
+  return {
+    name: 'inline-entry',
+    transformIndexHtml: {
+      order: 'post',
+      handler(html, ctx) {
+        if (!ctx.bundle) return html; // dev server: no bundle
+        let js = '';
+        let css: string[] = [];
+        for (const chunk of Object.values(ctx.bundle)) {
+          if (chunk.type === 'chunk' && chunk.isEntry) {
+            js = chunk.fileName;
+            css = [...(chunk.viteMetadata?.importedCss ?? [])];
+          }
+        }
+        return html.replaceAll('__ENTRY_JS__', js).replaceAll('__ENTRY_CSS__', css.join(','));
+      },
+    },
+  };
+}
+
+// Relative base so one build runs under any nginx subpath; the bootstrap detects the mount prefix
+// at runtime (see index.html). index.html carries no <script> entry, so main.ts is an explicit input.
 export default defineConfig({
   base: './',
+  plugins: [inlineEntry()],
   build: {
-    // Emits dist/manifest.json at the build root; the bootstrap uses it as the root marker
-    // AND to resolve the hashed entry chunk.
-    manifest: 'manifest.json',
     target: 'es2022',
     rollupOptions: {
-      // index.html carries no <script> entry (the bootstrap injects it from the manifest), so the
-      // JS entry is listed explicitly. Both are inputs: index.html is emitted as HTML, src/main.ts
-      // becomes the hashed, manifest-tracked entry chunk.
       input: {
         index: 'index.html',
         main: 'src/main.ts',

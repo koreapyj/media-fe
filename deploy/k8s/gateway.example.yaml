@@ -1,0 +1,23 @@
+# OPTIONAL example — only if you don't already have a shared Gateway to attach the HTTPRoute to.
+# Adjust gatewayClassName + the TLS cert Secret, then apply separately and point httproute.yaml's
+# parentRefs at it.
+#
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: Gateway
+# metadata:
+#   name: media-fe-gw
+# spec:
+#   gatewayClassName: GATEWAY_CLASS        # e.g. istio, cilium, nginx, contour…
+#   listeners:
+#     - name: https
+#       protocol: HTTPS
+#       port: 443
+#       hostname: tv.example.com
+#       tls:
+#         mode: Terminate
+#         certificateRefs:
+#           - kind: Secret
+#             name: tv-example-com-tls      # cert-manager or your own TLS Secret
+#       allowedRoutes:
+#         namespaces:
+#           from: Same

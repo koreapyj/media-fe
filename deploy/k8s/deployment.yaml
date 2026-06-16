@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: media-fe
+  labels:
+    app.kubernetes.io/name: media-fe
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: media-fe
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: media-fe
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # If the GHCR package is private, create a pull secret and reference it here:
+      #   kubectl create secret docker-registry ghcr-pull \
+      #     --docker-server=ghcr.io --docker-username=<gh-user> --docker-password=<PAT>
+      # imagePullSecrets:
+      #   - name: ghcr-pull
+      containers:
+        - name: nginx
+          # Pin by digest for reproducible rollouts: ghcr.io/koreapyj/media-fe@sha256:<digest>
+          image: ghcr.io/koreapyj/media-fe:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Directory mount (not subPath) so config.json auto-refreshes without a restart.
+            - { name: config, mountPath: /etc/media-fe, readOnly: true }
+            # Writable dirs required by the read-only root filesystem.
+            - { name: tmp, mountPath: /tmp }
+            - { name: cache, mountPath: /var/cache/nginx }
+      volumes:
+        - name: config
+          configMap:
+            name: media-fe-config
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}

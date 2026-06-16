@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.github
+.claude
+.env
+.env.*
+public/libass
+deploy/k8s
+*.md

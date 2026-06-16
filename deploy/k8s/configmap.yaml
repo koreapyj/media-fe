@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: media-fe-config
+# Edit playlists/overrides here; changes go live on the next browser load (no pod restart).
+data:
+  config.json: |
+    {
+      "playlists": [
+        "channels.m3u",
+        "https://example.com/another-playlist.m3u"
+      ],
+      "overrides": {
+        "channels.m3u": { "availabilityWindow": 1800 }
+      }
+    }
