@@ -117,7 +117,11 @@ export function parseM3U(text: string): Playlist {
 export async function loadPlaylist(url: string): Promise<Playlist> {
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to load playlist (${res.status}) from ${url}`);
-  return parseM3U(await res.text());
+  const playlist = parseM3U(await res.text());
+  // Resolve a relative `url-tvg` against the playlist's own (absolute, post-redirect) URL — not the
+  // app page. `res.url` is always absolute; an already-absolute EPG URL passes through unchanged.
+  if (playlist.epgUrl) playlist.epgUrl = new URL(playlist.epgUrl, res.url).href;
+  return playlist;
 }
 
 /** One playlist to load, with optional per-playlist options from the config manifest. */
