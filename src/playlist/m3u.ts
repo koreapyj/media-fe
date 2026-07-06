@@ -113,14 +113,27 @@ export function parseM3U(text: string): Playlist {
   return { epgUrl, name, channels };
 }
 
+/** Resolve `value` against `base`; malformed input is left untouched rather than throwing. */
+function resolveUrl(value: string, base: string): string {
+  try {
+    return new URL(value, base).href;
+  } catch {
+    return value;
+  }
+}
+
 /** Fetch and parse the playlist from a URL. */
 export async function loadPlaylist(url: string): Promise<Playlist> {
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to load playlist (${res.status}) from ${url}`);
   const playlist = parseM3U(await res.text());
-  // Resolve a relative `url-tvg` against the playlist's own (absolute, post-redirect) URL — not the
-  // app page. `res.url` is always absolute; an already-absolute EPG URL passes through unchanged.
-  if (playlist.epgUrl) playlist.epgUrl = new URL(playlist.epgUrl, res.url).href;
+  // Resolve relative `url-tvg`/`tvg-logo`/`thumb` against the playlist's own (absolute, post-redirect)
+  // URL — not the app page. `res.url` is always absolute; already-absolute values pass through unchanged.
+  if (playlist.epgUrl) playlist.epgUrl = resolveUrl(playlist.epgUrl, res.url);
+  for (const ch of playlist.channels) {
+    if (ch.logo) ch.logo = resolveUrl(ch.logo, res.url);
+    if (ch.thumb) ch.thumb = resolveUrl(ch.thumb, res.url);
+  }
   return playlist;
 }
 
