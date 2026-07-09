@@ -115,6 +115,10 @@ export class TvPlayer implements AssSink {
       fullScreenElement: fullscreenTarget,
       // Shaka's built-in top title slot; TvPlayer feeds it the current programme title.
       topControlPanelElements: ['content_title', 'spacer'],
+      contextMenuElements: [
+        "picture_in_picture",
+        "statistics",
+      ],
       controlPanelElements: [
         'play_pause',
         'mute',
@@ -122,9 +126,7 @@ export class TvPlayer implements AssSink {
         'live',
         'spacer',
         'epg-guide',
-        'language',
         'captions',
-        'quality',
         'overflow_menu',
         'fullscreen',
       ],
@@ -135,6 +137,7 @@ export class TvPlayer implements AssSink {
       overflowMenuButtons: [
         "statistics",
         'libass-border-type',
+        'language',
         "picture_in_picture",
         "remote",
       ],
