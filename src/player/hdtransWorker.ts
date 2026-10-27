@@ -44,14 +44,22 @@ let translator: Promise<HdTrans> | null = null;
 
 async function load(msg: InitMessage): Promise<HdTrans> {
   const [{ default: createEngine }, runtime, dict] = await Promise.all([
-    import(/* @vite-ignore */ msg.engineUrl) as Promise<{ default: () => Promise<Engine> }>,
+    import(/* @vite-ignore */ msg.engineUrl) as Promise<{
+      default: (options: { locateFile: (path: string) => string }) => Promise<Engine>;
+    }>,
     import(/* @vite-ignore */ msg.runtimeUrl) as Promise<Runtime>,
     fetch(msg.dictUrl).then((res) => {
       if (!res.ok) throw new Error(`hdTrans dictionary fetch failed (${res.status})`);
       return res.arrayBuffer();
     }),
   ]);
-  const engine = await createEngine();
+  const engine = await createEngine({
+    locateFile: (path) => {
+      const url = new URL(path, msg.engineUrl);
+      url.search = new URL(msg.engineUrl).search;
+      return url.href;
+    },
+  });
   engine.FS.writeFile('/dicts.hdsnap', new Uint8Array(dict));
   return runtime.HdTrans.init({
     module: engine,
