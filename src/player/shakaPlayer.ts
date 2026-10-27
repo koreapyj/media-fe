@@ -3,6 +3,8 @@ import type { Channel } from '../playlist/types';
 import { LibassRenderer } from './libassRenderer';
 import { HlsWindowAccumulator } from './hlsDvr';
 import { ASS_MIME_TYPES, registerAssParser, setAssSink, type AssSink } from './assTextParser';
+import { CaptionHistory, KOREAN_TRACK_NAME, addKoreanRendition } from './assTranslate';
+import { preloadHdTrans, translateSegment } from './hdtrans';
 import { subtitleStyle } from './subtitleStyle';
 import { registerBorderTypeMenu } from '../ui/borderTypeMenu';
 import { registerEpgButton } from '../ui/epgGuide';
@@ -51,6 +53,12 @@ export class TvPlayer implements AssSink {
   private contentTitleTimer: number | undefined;
   /** Reused small canvas for frame-change detection while stepping frames. */
   private diffCanvas: HTMLCanvasElement | null = null;
+  private activeTextTrack: string | null = null;
+  /** Bumped on a track switch; drops translations that finish too late. */
+  private textGeneration = 0;
+  /** Korean segments are translated in order: each caption reads after the ones before it. */
+  private koreanChain: Promise<void> = Promise.resolve();
+  private captionHistory = new CaptionHistory();
 
   private constructor(
     container: HTMLElement,
@@ -337,8 +345,31 @@ export class TvPlayer implements AssSink {
     this.libass?.setHeader(headerText);
   }
 
-  /** A media segment's ASS. On a discontinuity boundary, reset libass and reload that program's header. */
+  /** A media segment's ASS; the Korean track's are translated first. */
   appendSegment(text: string, segmentStartSec: number, segmentEndSec: number, uri: string): void {
+    // By the selected track, not the URI: Shaka drops the `#hdtrans` fragment on live refreshes.
+    if (!this.player.getTextTracks().some((t) => t.active && t.label === KOREAN_TRACK_NAME)) {
+      this.appendToLibass(text, segmentStartSec, segmentEndSec, uri);
+      return;
+    }
+    const generation = this.textGeneration;
+    this.koreanChain = this.koreanChain.then(async () => {
+      if (generation !== this.textGeneration) return;
+      const history = this.captionHistory;
+      if (this.discontinuityBoundaries.has(uri)) history.reset();
+      const ko = await translateSegment(text, segmentStartSec, history);
+      if (generation !== this.textGeneration) return;
+      this.appendToLibass(ko, segmentStartSec, segmentEndSec, uri);
+    });
+  }
+
+  /** On a discontinuity boundary, reset libass and reload that program's header. */
+  private appendToLibass(
+    text: string,
+    segmentStartSec: number,
+    segmentEndSec: number,
+    uri: string,
+  ): void {
     const initUri = this.discontinuityBoundaries.get(uri);
     if (initUri) {
       this.discontinuityBoundaries.delete(uri);
@@ -348,11 +379,22 @@ export class TvPlayer implements AssSink {
     this.libass?.appendSegment(text, segmentStartSec, segmentEndSec);
   }
 
-  /** Keep the libass overlay consistent with the UI's caption selection (clear when turned off). */
+  /** Keep the libass overlay consistent with the UI's caption selection (clear on off or switch). */
   private syncSubtitleState(): void {
     if (!this.libass) return;
-    const hasActiveText = this.player.getTextTracks().some((t) => t.active);
-    if (!hasActiveText) this.libass.clear();
+    const active = this.player.getTextTracks().find((t) => t.active);
+    const key = active ? `${active.language}|${active.label}` : null;
+    if (key === this.activeTextTrack) return;
+    if (!active || this.activeTextTrack !== null) {
+      this.libass.clear();
+      this.textGeneration++;
+      this.captionHistory = new CaptionHistory();
+    }
+    this.activeTextTrack = key;
+    if (active?.label === KOREAN_TRACK_NAME) {
+      this.libass.enableKorean();
+      preloadHdTrans().catch(() => {});
+    }
   }
 
   /** Stop playback and tear down captions (e.g. when returning to the channel list). */
@@ -364,6 +406,9 @@ export class TvPlayer implements AssSink {
 
   private teardownSubtitles(): void {
     setAssSink(null);
+    this.activeTextTrack = null;
+    this.textGeneration++;
+    this.captionHistory = new CaptionHistory();
     this.fetchedHeaders.clear();
     this.discontinuityBoundaries.clear();
     this.dvrAccumulators.clear();
@@ -402,7 +447,7 @@ export class TvPlayer implements AssSink {
   /**
    * Dispatch a MANIFEST response: the ASS subtitle media playlist goes to `rewriteAssPlaylist`; for
    * an opted-in channel, a regular media playlist is run through its `HlsWindowAccumulator` to retain
-   * scrolled-off segments and deepen the seek window. Master playlists pass through untouched.
+   * scrolled-off segments and deepen the seek window. Master playlists get the Korean rendition.
    */
   private handleManifestResponse(response: shaka.extern.Response): void {
     const bytes =
@@ -415,8 +460,12 @@ export class TvPlayer implements AssSink {
       this.rewriteAssPlaylist(response);
       return;
     }
+    if (/^#EXT-X-STREAM-INF/im.test(text)) {
+      const withKorean = addKoreanRendition(text);
+      if (withKorean !== text) response.data = new TextEncoder().encode(withKorean).buffer;
+      return;
+    }
     if (this.dvrWindowSec == null) return;
-    if (/^#EXT-X-STREAM-INF/im.test(text)) return; // master playlist
     if (!/^#EXTINF:/im.test(text)) return; // not a media playlist
 
     const key = (response.uri || response.originalUri || '').split('?')[0];

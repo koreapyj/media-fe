@@ -6,5 +6,6 @@ dist
 .env
 .env.*
 public/libass
+public/hdtrans
 deploy/k8s
 *.md

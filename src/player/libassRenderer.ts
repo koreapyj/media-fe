@@ -1,11 +1,14 @@
 import SubtitlesOctopus from 'libass-wasm';
 import { asset } from '../base';
 import { parseDialogueLines, type AssEvent } from './assDocument';
+import { withKoreanStyle } from './assTranslate';
 import type { SubtitleStyleState } from './subtitleStyle';
 
 /** Japanese ARIB subtitle face shipped with the app (always present in dist/fonts/). */
 const ARIB_FONT_URL = asset('fonts/wlcmaru2004aribu.woff2');
 const ARIB_FONT_NAME = 'wadalabchumarugo2004arib';
+
+const KOREAN_FONT_URL = asset('fonts/NanumSquareRoundB.woff2');
 
 /** Placeholder duration (ms) for an open-ended caption until its real end (next start) is known. */
 const OPEN_DURATION_MS = 3_600_000;
@@ -49,6 +52,7 @@ export class LibassRenderer {
   private baseStyles: LibassStyle[] = [];
   /** Current user style overrides (font scale + border type); persists across reset(). */
   private overrides: SubtitleStyleState = { fontScale: 1, borderType: 'default' };
+  private korean = false;
 
   constructor(
     private readonly video: HTMLVideoElement,
@@ -63,6 +67,21 @@ export class LibassRenderer {
     this.header = header;
     this.headerReady = true;
     void this.ensureOctopus();
+  }
+
+  /** Only fonts given at creation load before the first render, so the instance is recreated. */
+  enableKorean(): void {
+    if (this.korean || this.disposed) return;
+    this.korean = true;
+    if (!this.octopus) return;
+    const header = this.header;
+    this.reset();
+    if (header) this.setHeader(header);
+  }
+
+  private trackHeader(): string {
+    const header = this.header ?? '';
+    return this.korean ? withKoreanStyle(header) : header;
   }
 
   /** Add the Dialogue lines of one media segment, rebased to its presentation time. */
@@ -113,7 +132,7 @@ export class LibassRenderer {
     if (this.disposed || !this.octopus) return;
     this.openEvents = [];
     this.buffered = [];
-    this.octopus.setTrack(`${this.header ?? ''}\n[Events]\n`);
+    this.octopus.setTrack(`${this.trackHeader()}\n[Events]\n`);
     this.eventCount = 0;
     // setTrack reloads the header's raw styles, wiping the resolved Default fix + user overrides;
     // re-apply them so re-enabling captions keeps the saved size/border.
@@ -151,11 +170,12 @@ export class LibassRenderer {
     this.creating = true;
     const octopus = new SubtitlesOctopus({
       video: this.video,
-      subContent: this.header,
+      subContent: this.trackHeader(),
       workerUrl: asset('libass/subtitles-octopus-worker.js'),
       legacyWorkerUrl: asset('libass/subtitles-octopus-worker-legacy.js'),
       fallbackFont: ARIB_FONT_URL,
       availableFonts: { [ARIB_FONT_NAME]: ARIB_FONT_URL },
+      fonts: this.korean ? [KOREAN_FONT_URL] : [],
       timeOffset: this.timeOffset,
       onError: (e) => console.error('SubtitlesOctopus error', e),
     });
@@ -163,7 +183,12 @@ export class LibassRenderer {
 
     await this.resolveStyles(octopus);
     this.creating = false;
-    if (this.disposed || this.octopus !== octopus) return;
+    if (this.disposed) return;
+    // Reset while creating: build the replacement now.
+    if (this.octopus !== octopus) {
+      void this.ensureOctopus();
+      return;
+    }
 
     this.ready = true;
     if (this.buffered.length) {

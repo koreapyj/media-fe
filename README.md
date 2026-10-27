@@ -74,3 +74,19 @@ networking response filter does both):
   `init.ass` header (PlayResX/Y, styles, fonts) is fetched directly and fed to libass via
   `setHeader` (see `loadHeader`). `manifest.hls.ignoreTextStreamFailures` is enabled so any subtitle
   hiccup can never break video playback.
+
+## Korean machine translation
+
+When a master playlist has a Japanese subtitle rendition, the same filter adds a copy named
+**한국어 (자동번역)** (`src/player/assTranslate.ts`). Its playlist URI carries a `#hdtrans` fragment, so
+it is a separate track over the same files. While it is selected, `TvPlayer` translates each segment
+with [hdTrans](https://github.com/sokcuri/hdTrans) before libass, in order.
+
+A caption's rows are grouped into blocks (by gap, position, colour and speaker marks) and sent as one
+`wrapped` call, blocks split by a blank line, with the track's recent captions as `context`. The
+Korean comes back line for line and is laid out per block in NanumSquareRound (`public/fonts/`).
+
+The engine, runtime and ~37 MB dictionary are vendored from the `hdtrans` package into
+`public/hdtrans/` (postinstall, like libass) and run in a worker (`src/player/hdtransWorker.ts`);
+nothing of it, nor the Korean font, loads until the Korean track is selected. Switching tracks clears
+libass, since the previous track's open-ended captions would otherwise overlap the new one.
