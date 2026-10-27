@@ -1,5 +1,4 @@
-# Build the static SPA with Node, then serve dist/ with unprivileged nginx.
-FROM node:26-alpine AS build
+FROM --platform=$BUILDPLATFORM node:26-alpine AS build
 WORKDIR /app
 # scripts/ is copied before `npm ci` so the postinstall (setup-libass) can vendor public/libass.
 COPY package.json package-lock.json ./
