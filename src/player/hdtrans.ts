@@ -1,3 +1,4 @@
+import { version as hdtransVersion } from 'hdtrans/package.json';
 import { asset } from '../base';
 import { translateAss, type CaptionHistory, type TranslationJob } from './assTranslate';
 
@@ -40,7 +41,11 @@ export function preloadHdTrans(): Promise<void> {
     worker = null;
     ready = null;
   });
-  const abs = (path: string) => new URL(asset(path), location.href).href;
+  const abs = (path: string) => {
+    const url = new URL(asset(path), location.href);
+    url.searchParams.set('v', hdtransVersion);
+    return url.href;
+  };
   w.postMessage({
     type: 'init',
     engineUrl: abs('hdtrans/hdtrans_engine.js'),
