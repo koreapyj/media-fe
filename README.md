@@ -80,7 +80,9 @@ networking response filter does both):
 When a master playlist has a Japanese subtitle rendition, the same filter adds a copy named
 **한국어 (자동번역)** (`src/player/assTranslate.ts`). Its playlist URI carries a `#hdtrans` fragment, so
 it is a separate track over the same files. While it is selected, `TvPlayer` translates each segment
-with [hdTrans](https://github.com/sokcuri/hdTrans) before libass, in order.
+with [hdTrans](https://github.com/sokcuri/hdTrans) before libass, in order. Source caption boundaries
+are registered immediately, so slow translation does not keep the preceding caption on screen past
+its original end. Translated text retains the original presentation timestamps.
 
 A caption's rows are grouped into blocks (by gap, position, colour and speaker marks) and sent as one
 `wrapped` call, blocks split by a blank line, with the track's recent captions as `context`. The

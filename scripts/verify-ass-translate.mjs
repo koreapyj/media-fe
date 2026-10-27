@@ -10,6 +10,8 @@ import {
   wrap,
 } from '../src/player/assTranslate.ts';
 
+import { parseDialogueLines } from '../src/player/assDocument.ts';
+
 let failures = 0;
 const ok = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); failures++; } };
 
@@ -212,6 +214,21 @@ const tail = (list, n) => JSON.stringify(list.slice(-n));
   );
   ok(tail(jobs[1].context, 2) === '["サイバー攻撃というのは、技術で","防ぐことができるんですけれど"]', `unpunctuated caption goes on: ${tail(jobs[1].context, 3)}`);
   ok(jobs[2].context.at(-1) === '' && jobs[2].context.at(-2) === '', `another colour does not go on: ${tail(jobs[2].context, 3)}`);
+}
+
+// Translation preserves source timestamps, including fractional bases and reordered fields.
+for (const text of [
+  seg(
+    String.raw`0:00:01.55,,Default,,0,0,0,,{\pos(170,390)}今日はいい天気ですね。`,
+    String.raw`0:00:03.25,0:00:05.50,Default,,0,0,0,,{\pos(170,450)}おはようございます。`,
+    '0:00:05.75,,Default,,0,0,0,,',
+  ),
+  '[Events]\nFormat: Start, End, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n' +
+    String.raw`Dialogue: 0:00:01.55,0:00:03.25,0,Default,,0,0,0,,{\pos(170,390)}今日はいい天気ですね。`,
+]) {
+  const translated = await translateAss(text, 1234.567, new CaptionHistory(), fake);
+  const timing = s => parseDialogueLines(s, 1234.567).map(e => [e.startMs, e.endMs]);
+  ok(JSON.stringify(timing(translated)) === JSON.stringify(timing(text)), 'Japanese and translated presentation timestamps match');
 }
 
 // --- Wrapping. ---

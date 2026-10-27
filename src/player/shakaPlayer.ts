@@ -156,8 +156,9 @@ export class TvPlayer implements AssSink {
   /** Load a channel's stream and wire up its ASS captions. */
   async playChannel(channel: Channel): Promise<void> {
     this.teardownSubtitles();
-    this.libass = new LibassRenderer(this.video);
-    this.libass.setStyleOverrides(subtitleStyle.get()); // seed current size/border overrides
+    const renderer = new LibassRenderer(this.video);
+    this.libass = renderer;
+    renderer.setStyleOverrides(subtitleStyle.get()); // seed current size/border overrides
     setAssSink(this); // TvPlayer mediates discontinuity handling before forwarding to libass
 
     // Expand the live DVR/seek window for opted-in playlists: the HlsWindowAccumulator retains
@@ -168,9 +169,15 @@ export class TvPlayer implements AssSink {
 
     // Restore the saved subtitle selection without persisting our own (programmatic) choice.
     this.suppressSubtitlePersist = true;
-    await this.player.load(channel.streamUrl);
-    this.applySubtitleSelection();
-    this.suppressSubtitlePersist = false;
+    try {
+      await this.player.load(channel.streamUrl);
+      if (this.libass !== renderer) return;
+      this.applySubtitleSelection();
+      // Selecting an already-active track emits no textchanged event.
+      this.syncSubtitleState();
+    } finally {
+      if (this.libass === renderer) this.suppressSubtitlePersist = false;
+    }
 
     this.startContentTitle(channel);
   }
@@ -347,11 +354,15 @@ export class TvPlayer implements AssSink {
 
   /** A media segment's ASS; the Korean track's are translated first. */
   appendSegment(text: string, segmentStartSec: number, segmentEndSec: number, uri: string): void {
+    this.syncSubtitleState();
+    const active = this.player.getTextTracks().find((t) => t.active);
+    if (!active) return;
     // By the selected track, not the URI: Shaka drops the `#hdtrans` fragment on live refreshes.
-    if (!this.player.getTextTracks().some((t) => t.active && t.label === KOREAN_TRACK_NAME)) {
+    if (active.label !== KOREAN_TRACK_NAME) {
       this.appendToLibass(text, segmentStartSec, segmentEndSec, uri);
       return;
     }
+    this.libass?.prepareSegment(text, segmentStartSec);
     const generation = this.textGeneration;
     this.koreanChain = this.koreanChain.then(async () => {
       if (generation !== this.textGeneration) return;
@@ -373,7 +384,7 @@ export class TvPlayer implements AssSink {
     const initUri = this.discontinuityBoundaries.get(uri);
     if (initUri) {
       this.discontinuityBoundaries.delete(uri);
-      this.libass?.reset();
+      this.libass?.reset(segmentStartSec);
       void this.loadHeader(initUri, /* force= */ true);
     }
     this.libass?.appendSegment(text, segmentStartSec, segmentEndSec);
@@ -388,6 +399,7 @@ export class TvPlayer implements AssSink {
     if (!active || this.activeTextTrack !== null) {
       this.libass.clear();
       this.textGeneration++;
+      this.koreanChain = Promise.resolve();
       this.captionHistory = new CaptionHistory();
     }
     this.activeTextTrack = key;
@@ -408,6 +420,7 @@ export class TvPlayer implements AssSink {
     setAssSink(null);
     this.activeTextTrack = null;
     this.textGeneration++;
+    this.koreanChain = Promise.resolve();
     this.captionHistory = new CaptionHistory();
     this.fetchedHeaders.clear();
     this.discontinuityBoundaries.clear();

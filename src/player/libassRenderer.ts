@@ -41,11 +41,11 @@ export class LibassRenderer {
   private header: string | null = null;
   private headerReady = false;
   private ready = false; // octopus created AND styles resolved
-  private creating = false;
   private disposed = false;
 
   private buffered: AssEvent[] = [];
   private openEvents: OpenEvent[] = [];
+  private captionStarts: number[] = [];
   private eventCount = 0; // mirrors track->n_events (append-only between resets)
   private styleIndexByName = new Map<string, number>();
   /** Authored styles (index 0 = the header's real Default), used as the base for user overrides. */
@@ -84,10 +84,44 @@ export class LibassRenderer {
     return this.korean ? withKoreanStyle(header) : header;
   }
 
+  /** Register source caption boundaries without waiting for translated text. */
+  prepareSegment(text: string, segmentStartSec: number): void {
+    if (this.disposed) return;
+    this.rememberStarts(parseDialogueLines(text, segmentStartSec));
+  }
+
+  /** Index of the first known caption strictly after startMs. */
+  private nextCaptionIndex(startMs: number): number {
+    let lo = 0;
+    let hi = this.captionStarts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.captionStarts[mid] <= startMs) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  private rememberStarts(events: AssEvent[]): void {
+    for (const ev of events) {
+      const i = this.nextCaptionIndex(ev.startMs);
+      if (this.captionStarts[i - 1] !== ev.startMs) this.captionStarts.splice(i, 0, ev.startMs);
+    }
+    for (let i = this.openEvents.length - 1; i >= 0; i--) {
+      const open = this.openEvents[i];
+      const next = this.captionStarts[this.nextCaptionIndex(open.startMs)];
+      if (next !== undefined) {
+        this.octopus?.setEvent({ Duration: next - open.startMs }, open.index);
+        this.openEvents.splice(i, 1);
+      }
+    }
+  }
+
   /** Add the Dialogue lines of one media segment, rebased to its presentation time. */
   appendSegment(text: string, segmentStartSec: number, _segmentEndSec: number): void {
     if (this.disposed) return;
     const events = parseDialogueLines(text, segmentStartSec);
+    this.rememberStarts(events);
     if (!this.ready) {
       this.buffered.push(...events);
       void this.ensureOctopus();
@@ -100,18 +134,11 @@ export class LibassRenderer {
   private addEvents(events: AssEvent[]): void {
     if (!this.octopus) return;
     for (const ev of events) {
-      // Close open captions that started strictly earlier (equal start = same multi-line caption).
-      for (let i = this.openEvents.length - 1; i >= 0; i--) {
-        const open = this.openEvents[i];
-        if (open.startMs < ev.startMs) {
-          this.octopus.setEvent({ Duration: ev.startMs - open.startMs }, open.index);
-          this.openEvents.splice(i, 1);
-        }
-      }
-      const open = ev.endMs == null;
+      const endMs = ev.endMs ?? this.captionStarts[this.nextCaptionIndex(ev.startMs)];
+      const open = endMs == null;
       this.octopus.createEvent({
         Start: ev.startMs,
-        Duration: open ? OPEN_DURATION_MS : ev.endMs! - ev.startMs,
+        Duration: open ? OPEN_DURATION_MS : endMs - ev.startMs,
         Layer: ev.layer,
         Style: this.styleIndexByName.get(ev.style),
         Name: ev.name,
@@ -129,9 +156,11 @@ export class LibassRenderer {
 
   /** Clear the overlay (e.g. captions toggled off in the UI) without tearing down the instance. */
   clear(): void {
-    if (this.disposed || !this.octopus) return;
+    if (this.disposed) return;
     this.openEvents = [];
+    this.captionStarts = [];
     this.buffered = [];
+    if (!this.octopus) return;
     this.octopus.setTrack(`${this.trackHeader()}\n[Events]\n`);
     this.eventCount = 0;
     // setTrack reloads the header's raw styles, wiping the resolved Default fix + user overrides;
@@ -140,9 +169,12 @@ export class LibassRenderer {
   }
 
   /** Tear down the instance on a discontinuity; a fresh setHeader() recreates it. */
-  reset(): void {
+  reset(segmentStartSec?: number): void {
     if (this.disposed) return;
     this.openEvents = [];
+    this.captionStarts = segmentStartSec == null
+      ? []
+      : this.captionStarts.filter((start) => start >= segmentStartSec * 1000);
     this.buffered = [];
     this.eventCount = 0;
     this.ready = false;
@@ -166,8 +198,7 @@ export class LibassRenderer {
 
   /** Create the instance once a header is available, resolve styles, then flush buffered events. */
   private async ensureOctopus(): Promise<void> {
-    if (this.octopus || this.creating || this.disposed || !this.headerReady || !this.header) return;
-    this.creating = true;
+    if (this.octopus || this.disposed || !this.headerReady || !this.header) return;
     const octopus = new SubtitlesOctopus({
       video: this.video,
       subContent: this.trackHeader(),
@@ -182,13 +213,7 @@ export class LibassRenderer {
     this.octopus = octopus;
 
     await this.resolveStyles(octopus);
-    this.creating = false;
-    if (this.disposed) return;
-    // Reset while creating: build the replacement now.
-    if (this.octopus !== octopus) {
-      void this.ensureOctopus();
-      return;
-    }
+    if (this.disposed || this.octopus !== octopus) return;
 
     this.ready = true;
     if (this.buffered.length) {
@@ -289,6 +314,7 @@ export class LibassRenderer {
   dispose(): void {
     this.disposed = true;
     this.openEvents = [];
+    this.captionStarts = [];
     this.buffered = [];
     if (this.octopus) {
       try {
