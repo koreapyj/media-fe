@@ -94,6 +94,27 @@ export class TvPlayer implements AssSink {
     // page; flag the container so CSS can hide the stray subtitle overlay while in PiP.
     this.video.addEventListener('enterpictureinpicture', () => this.container.classList.add('pip'));
     this.video.addEventListener('leavepictureinpicture', () => this.container.classList.remove('pip'));
+    this.video.addEventListener('seeking', () => this.dropCaptionsOutsideBuffer());
+  }
+
+  /**
+   * A seek outside Shaka's text buffer makes Shaka drop that buffer and fetch from the new position;
+   * drop the captions libass holds with it. Kept, a caption without an End from the old position
+   * would end at whatever caption start is known next, which may be minutes away from it.
+   */
+  private dropCaptionsOutsideBuffer(): void {
+    if (!this.libass || this.activeTextTrack === null) return;
+    const t = this.video.currentTime;
+    if (this.player.getBufferedInfo().text.some((r) => r.start <= t && t < r.end)) return;
+    this.dropCaptions();
+  }
+
+  /** Clear libass and drop pending translations along with their context. */
+  private dropCaptions(): void {
+    this.libass?.clear();
+    this.textGeneration++;
+    this.koreanChain = Promise.resolve();
+    this.captionHistory = new CaptionHistory();
   }
 
   /**
@@ -367,7 +388,7 @@ export class TvPlayer implements AssSink {
       this.appendToLibass(text, segmentStartSec, segmentEndSec, uri);
       return;
     }
-    this.libass?.prepareSegment(text, segmentStartSec, segmentEndSec);
+    this.libass?.prepareSegment(text, segmentStartSec);
     const generation = this.textGeneration;
     this.koreanChain = this.koreanChain.then(async () => {
       if (generation !== this.textGeneration) return;
@@ -401,12 +422,7 @@ export class TvPlayer implements AssSink {
     const active = this.player.getTextTracks().find((t) => t.active);
     const key = active ? `${active.language}|${active.label}` : null;
     if (key === this.activeTextTrack) return;
-    if (!active || this.activeTextTrack !== null) {
-      this.libass.clear();
-      this.textGeneration++;
-      this.koreanChain = Promise.resolve();
-      this.captionHistory = new CaptionHistory();
-    }
+    if (!active || this.activeTextTrack !== null) this.dropCaptions();
     this.activeTextTrack = key;
     if (active?.label === KOREAN_TRACK_NAME) {
       this.libass.enableKorean();
