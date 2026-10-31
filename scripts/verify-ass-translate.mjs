@@ -26,7 +26,11 @@ const ko = master.split('\n').find((l) => l.includes(KOREAN_TRACK_NAME));
 ok(ko?.includes('TYPE=SUBTITLES') && ko.includes('GROUP-ID="arib"'), 'Korean rendition joins the same subtitle group');
 ok(ko?.includes('LANGUAGE="ko"') && ko.includes('DEFAULT=NO'), `Korean rendition is ko and not default: ${ko}`);
 ok(ko?.includes('URI="arib_ass/stream.m3u8#hdtrans"'), `Korean rendition URI carries the mark: ${ko}`);
+const ja = master.split('\n').find((l) => l.includes('URI="arib_ass/stream.m3u8"'));
+ok(ja?.includes('NAME="日本語"') && ja.includes('LANGUAGE="ja"') && ja.includes('DEFAULT=YES'), `Japanese rendition is named for the captions menu, otherwise unchanged: ${ja}`);
+ok(master.split('\n').filter((l) => l.includes('TYPE=SUBTITLES')).length === 2, 'one Japanese and one Korean subtitle rendition');
 ok(master.split('\n').filter((l) => l.includes('TYPE=AUDIO')).length === 1, 'audio renditions are not copied');
+ok(master.includes('NAME="audio_1"'), 'audio rendition names are untouched');
 ok(addKoreanRendition(master) === master, 'adding twice is a no-op');
 ok(addKoreanRendition(MASTER.replace(/LANGUAGE="ja",URI="arib/, 'LANGUAGE="en",URI="arib')) === MASTER.replace(/LANGUAGE="ja",URI="arib/, 'LANGUAGE="en",URI="arib'), 'no Japanese subtitles → unchanged');
 
