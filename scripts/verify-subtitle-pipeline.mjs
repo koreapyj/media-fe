@@ -88,6 +88,7 @@ const tv = Object.create(TvPlayer.prototype);
 Object.assign(tv, {
   video: {}, libass: null, activeTextTrack: null, textGeneration: 0,
   koreanChain: Promise.resolve(), fetchedHeaders: new Set(), discontinuityBoundaries: new Map(),
+  assSegments: new Map(), lastAssSegment: null,
   dvrAccumulators: new Map(), startContentTitle() {},
   player: { configure() {}, load: async () => {}, getTextTracks: () => [koTrack], selectTextTrack() {} },
 });
@@ -168,31 +169,104 @@ assert.equal(instances.at(-1).events[0]?.Duration, 2000, 'discontinuity retains 
 finishes[1]();
 await tv.koreanChain;
 
-// Seeking back past the buffer: a caption must not run until a start from a much later segment.
+// A seek outside Shaka's text buffer drops the old position's captions with Shaka's buffer.
 const line = (start, text) => `[Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,${start},,Default,,0,0,0,,${text}
+Dialogue: 0,${start},,HdTransKo,,0,0,0,,${text}
 `;
-const seek = new LibassRenderer({});
-seek.setHeader(HEADER);
+await tv.playChannel({ name: 'seek', streamUrl: 'seek' });
+tv.libass.setHeader(HEADER);
 await tick();
 const seekOctopus = instances.at(-1);
-seek.appendSegment(line('0:00:01.00', 'live'), 600, 606); // live edge, before the seek
-seek.appendSegment(line('0:00:04.00', 'past A'), 300, 306); // after seeking back 5 minutes
-const pastA = seekOctopus.events.find(e => e.Text === 'past A');
-assert.ok(pastA.Duration > 300_000, `a past caption stays open instead of ending at the live caption (Duration ${pastA.Duration})`);
-seek.appendSegment(line('0:00:01.00', 'past B'), 306, 312);
-assert.equal(pastA.Duration, 3000, 'the next past segment closes it at the following caption');
-assert.ok(seekOctopus.events.find(e => e.Text === 'past B').Duration > 300_000, 'past B stays open: 312s to 600s has not been seen yet');
-// Playing on into segments already seen at the live edge must not add their captions again.
-seek.appendSegment(line('0:00:01.00', 'live'), 600, 606);
-assert.equal(seekOctopus.events.filter(e => e.Text === 'live').length, 1, 'a re-fetched segment does not duplicate its captions');
-seek.reset();
-seek.setHeader(HEADER);
+let textBuffer = [];
+tv.player.getBufferedInfo = () => ({ text: textBuffer });
+globalThis.__translateSegment = async text => text;
+tv.appendSegment(line('0:00:01.00', 'live'), 600, 606, 'live.ass');
+await tv.koreanChain;
+textBuffer = [{ start: 600, end: 606 }];
+tv.video.currentTime = 603;
+tv.dropCaptionsOutsideBuffer();
+assert.equal(seekOctopus.events.length, 1, 'a seek inside the text buffer keeps its captions: Shaka does not fetch them again');
+let finishLive;
+globalThis.__translateSegment = text => new Promise(resolve => { finishLive = () => resolve(text); });
+tv.appendSegment(line('0:00:01.00', 'live 2'), 606, 612, 'live2.ass'); // translation still running
 await tick();
-seek.appendSegment(line('0:00:01.00', 'live'), 600, 606);
-assert.equal(instances.at(-1).events.filter(e => e.Text === 'live').length, 1, 'after a reset the rebuilt track gets the caption again');
-seek.dispose();
+tv.video.currentTime = 300;
+tv.dropCaptionsOutsideBuffer();
+assert.equal(seekOctopus.events.length, 0, 'a seek outside the text buffer clears libass');
+globalThis.__translateSegment = async text => text;
+textBuffer = [];
+tv.appendSegment(line('0:00:04.00', 'past A'), 300, 306, 'pastA.ass');
+await tv.koreanChain;
+finishLive();
+await tick();
+assert.deepEqual(seekOctopus.events.map(e => e.Text), ['past A'], 'a translation of the old position finishing late is dropped');
+tv.appendSegment(line('0:00:01.00', 'past B'), 306, 312, 'pastB.ass');
+await tv.koreanChain;
+assert.equal(seekOctopus.events[0].Duration, 3000, 'the past caption ends at the next past caption, not at the live one');
+// Seeking forward (or back to live) from there: past B is cleared, so it cannot stay on screen.
+tv.video.currentTime = 450;
+tv.dropCaptionsOutsideBuffer();
+tv.appendSegment(line('0:00:01.00', 'later'), 450, 456, 'later.ass');
+await tv.koreanChain;
+assert.deepEqual(seekOctopus.events.map(e => e.Text), ['later'], 'nothing from the past position is left after a forward seek');
+tv.appendSegment(line('0:00:01.00', '大量に作れないので￫'), 456, 462, 'arrow.ass');
+await tv.koreanChain;
+assert.equal(seekOctopus.events.at(-1).Text, '大量に作れないので→', 'the halfwidth arrow is drawn with a glyph the fonts have');
+
+// Where captions resume after a seek, the caption already on screen comes from an earlier segment.
+const resumeTrack = { language: 'ja', label: 'subtitle_3', active: true, mimeType: 'text/x-ssa' };
+tv.player.getTextTracks = () => [resumeTrack];
+tv.loadHeader = async () => {};
+const base = 'https://cdn.example/arib_ass/';
+const playlist = (names, boundaryAt) => ({
+  uri: base + 'stream.m3u8',
+  data: new TextEncoder().encode(['#EXTM3U', '#EXT-X-MAP:URI="init.ass"',
+    ...names.flatMap((n) => [...(n === boundaryAt ? ['#EXT-X-DISCONTINUITY', '#EXT-X-MAP:URI="init2.ass"'] : []), '#EXTINF:5.000000,', n])].join('\n')).buffer,
+});
+const files = {
+  'a.ass': line('0:00:02.00', 'carried'), // 102 s, still on screen at 110 s
+  'b.ass': '[Events]\n',
+  'c.ass': line('0:00:03.00', 'next'), // 113 s
+  'd.ass': '[Events]\n',
+};
+const fetched = [];
+globalThis.fetch = async (u) => { fetched.push(u.split('/').pop()); return { ok: true, text: async () => files[u.split('/').pop()] }; };
+const settle = async () => { for (let i = 0; i < 20; i++) await tick(); };
+tv.rewriteAssPlaylist(playlist(['a.ass', 'b.ass', 'c.ass']));
+tv.rewriteAssPlaylist(playlist(['b.ass', 'c.ass', 'd.ass'])); // a refresh keeps what came before b
+tv.syncSubtitleState();
+const resumeOctopus = instances.at(-1);
+tv.appendSegment(files['c.ass'], 110, 115, base + 'c.ass');
+await settle();
+assert.deepEqual(fetched, ['b.ass', 'a.ass'], 'looks back until a segment with a caption');
+const carried = resumeOctopus.events.find(e => e.Text === 'carried');
+assert.equal(carried?.Start, 102000, 'the earlier caption is placed at its own time');
+assert.equal(carried?.Duration, 11000, 'and ends at the next caption');
+tv.appendSegment(files['d.ass'], 115, 120, base + 'd.ass');
+await settle();
+assert.equal(fetched.length, 2, 'a segment following the last one does not look back');
+// Not past the start of a program, and not after another seek.
+tv.discontinuityBoundaries.clear();
+tv.rewriteAssPlaylist(playlist(['a.ass', 'b.ass', 'c.ass'], 'c.ass'));
+tv.discontinuityBoundaries.clear(); // the boundary reset itself is covered above
+tv.dropCaptions();
+fetched.length = 0;
+tv.appendSegment(files['c.ass'], 110, 115, base + 'c.ass');
+await settle();
+assert.deepEqual(fetched, [], 'a program\'s first segment does not look into the previous program');
+tv.assSegments.get(base + 'c.ass').boundary = false;
+tv.dropCaptions();
+let release;
+globalThis.fetch = async (u) => { fetched.push(u.split('/').pop()); await new Promise(r => { release = r; }); return { ok: true, text: async () => files[u.split('/').pop()] }; };
+tv.appendSegment(files['c.ass'], 110, 115, base + 'c.ass');
+await tick();
+tv.dropCaptions(); // seek again while looking back
+release();
+await settle();
+assert.ok(!instances.at(-1).events.some(e => e.Text === 'carried' || e.Text === 'next'), 'a look-back interrupted by a seek is dropped');
+tv.player.getTextTracks = () => [koTrack];
+tv.syncSubtitleState();
 
 // A destination channel must not wait for a discarded source-channel translation.
 let finishOld;

@@ -12,8 +12,6 @@ const KOREAN_FONT_URL = asset('fonts/NanumSquareRoundB.woff2');
 
 /** Placeholder duration (ms) for an open-ended caption until its real end (next start) is known. */
 const OPEN_DURATION_MS = 3_600_000;
-/** Gap (ms) between two segments' times that still counts as contiguous. */
-const COVERAGE_SLACK_MS = 100;
 
 /** A libass style as returned by getStyles (fields + its track index). */
 type LibassStyle = { Name: string; _index: number } & Record<string, unknown>;
@@ -48,14 +46,6 @@ export class LibassRenderer {
   private buffered: AssEvent[] = [];
   private openEvents: OpenEvent[] = [];
   private captionStarts: number[] = [];
-  /**
-   * Merged [startMs, endMs] spans of the segments seen since the last reset. A known next start only
-   * ends a caption if the time between them was all seen: after seeking back, the next known start
-   * can belong to a much later segment, and the captions in between have not arrived yet.
-   */
-  private coveredSpans: Array<[number, number]> = [];
-  /** Events already created since the last reset; a segment fetched again must not add them twice. */
-  private createdKeys = new Set<string>();
   private eventCount = 0; // mirrors track->n_events (append-only between resets)
   private styleIndexByName = new Map<string, number>();
   /** Authored styles (index 0 = the header's real Default), used as the base for user overrides. */
@@ -95,33 +85,9 @@ export class LibassRenderer {
   }
 
   /** Register source caption boundaries without waiting for translated text. */
-  prepareSegment(text: string, segmentStartSec: number, segmentEndSec: number): void {
+  prepareSegment(text: string, segmentStartSec: number): void {
     if (this.disposed) return;
-    this.markCovered(segmentStartSec, segmentEndSec);
     this.rememberStarts(parseDialogueLines(text, segmentStartSec));
-  }
-
-  private markCovered(startSec: number, endSec: number): void {
-    const spans = [...this.coveredSpans, [startSec * 1000, endSec * 1000] as [number, number]]
-      .sort((a, b) => a[0] - b[0]);
-    const merged: Array<[number, number]> = [];
-    for (const [s, e] of spans) {
-      const last = merged[merged.length - 1];
-      // Segment times are floats; adjacent segments may miss each other by a few milliseconds.
-      if (last && s <= last[1] + COVERAGE_SLACK_MS) last[1] = Math.max(last[1], e);
-      else merged.push([s, e]);
-    }
-    this.coveredSpans = merged;
-  }
-
-  private isCovered(fromMs: number, toMs: number): boolean {
-    return this.coveredSpans.some(([s, e]) => s <= fromMs && toMs <= e);
-  }
-
-  /** The start of the caption that ends the one at startMs, if no caption can still arrive between. */
-  private knownEnd(startMs: number): number | undefined {
-    const next = this.captionStarts[this.nextCaptionIndex(startMs)];
-    return next !== undefined && this.isCovered(startMs, next) ? next : undefined;
   }
 
   /** Index of the first known caption strictly after startMs. */
@@ -143,7 +109,7 @@ export class LibassRenderer {
     }
     for (let i = this.openEvents.length - 1; i >= 0; i--) {
       const open = this.openEvents[i];
-      const next = this.knownEnd(open.startMs);
+      const next = this.captionStarts[this.nextCaptionIndex(open.startMs)];
       if (next !== undefined) {
         this.octopus?.setEvent({ Duration: next - open.startMs }, open.index);
         this.openEvents.splice(i, 1);
@@ -152,9 +118,8 @@ export class LibassRenderer {
   }
 
   /** Add the Dialogue lines of one media segment, rebased to its presentation time. */
-  appendSegment(text: string, segmentStartSec: number, segmentEndSec: number): void {
+  appendSegment(text: string, segmentStartSec: number, _segmentEndSec: number): void {
     if (this.disposed) return;
-    this.markCovered(segmentStartSec, segmentEndSec);
     const events = parseDialogueLines(text, segmentStartSec);
     this.rememberStarts(events);
     if (!this.ready) {
@@ -169,10 +134,7 @@ export class LibassRenderer {
   private addEvents(events: AssEvent[]): void {
     if (!this.octopus) return;
     for (const ev of events) {
-      const key = [ev.startMs, ev.endMs, ev.layer, ev.style, ev.marginL, ev.marginR, ev.marginV, ev.text].join('\u0000');
-      if (this.createdKeys.has(key)) continue;
-      this.createdKeys.add(key);
-      const endMs = ev.endMs ?? this.knownEnd(ev.startMs);
+      const endMs = ev.endMs ?? this.captionStarts[this.nextCaptionIndex(ev.startMs)];
       const open = endMs == null;
       this.octopus.createEvent({
         Start: ev.startMs,
@@ -184,7 +146,8 @@ export class LibassRenderer {
         MarginR: ev.marginR,
         MarginV: ev.marginV,
         Effect: ev.effect,
-        Text: ev.text.replace(/\{\\(3a&Hff&|bord3)\}/g,''),
+        // Neither caption font has the halfwidth arrow (U+FFEB) some channels end a line with.
+        Text: ev.text.replace(/\{\\(3a&Hff&|bord3)\}/g,'').replace(/\uFFEB/g, '→'),
         ReadOrder: this.eventCount,
       });
       if (open) this.openEvents.push({ index: this.eventCount, startMs: ev.startMs });
@@ -197,8 +160,6 @@ export class LibassRenderer {
     if (this.disposed) return;
     this.openEvents = [];
     this.captionStarts = [];
-    this.coveredSpans = [];
-    this.createdKeys.clear();
     this.buffered = [];
     if (!this.octopus) return;
     this.octopus.setTrack(`${this.trackHeader()}\n[Events]\n`);
@@ -215,12 +176,6 @@ export class LibassRenderer {
     this.captionStarts = segmentStartSec == null
       ? []
       : this.captionStarts.filter((start) => start >= segmentStartSec * 1000);
-    this.coveredSpans = segmentStartSec == null
-      ? []
-      : this.coveredSpans
-        .filter(([, e]) => e > segmentStartSec * 1000)
-        .map(([s, e]) => [Math.max(s, segmentStartSec * 1000), e]);
-    this.createdKeys.clear(); // the libass track is rebuilt from scratch
     this.buffered = [];
     this.eventCount = 0;
     this.ready = false;
@@ -361,8 +316,6 @@ export class LibassRenderer {
     this.disposed = true;
     this.openEvents = [];
     this.captionStarts = [];
-    this.coveredSpans = [];
-    this.createdKeys.clear();
     this.buffered = [];
     if (this.octopus) {
       try {

@@ -12,6 +12,19 @@ import { registerLiveButton } from '../ui/liveButton';
 import { nowNext } from '../epg/epg';
 import { loadJSON, saveJSON } from '../storage';
 
+/** How far back (in segments) to look for the caption already on screen where captions resume. */
+const BACKFILL_SEGMENTS = 12;
+/** ASS segments remembered for that look-back (a few times a long DVR window). */
+const ASS_SEGMENT_LIMIT = 2000;
+
+interface AssSegmentLink {
+  /** The segment before it in the playlist, and that segment's duration. */
+  prev: string | null;
+  prevDuration: number;
+  /** First segment of a program (after `#EXT-X-DISCONTINUITY`). */
+  boundary: boolean;
+}
+
 function isAssTrack(t: shaka.extern.TextTrack): boolean {
   const mime = (t.mimeType ?? '').toLowerCase();
   const codecs = (t.codecs ?? '').toLowerCase();
@@ -42,6 +55,10 @@ export class TvPlayer implements AssSink {
   private fetchedHeaders = new Set<string>();
   /** boundary segment URI -> the init.ass URI declared after its `#EXT-X-DISCONTINUITY`. */
   private discontinuityBoundaries = new Map<string, string>();
+  /** ASS segment URI -> the segment before it, accumulated across live playlist refreshes. */
+  private assSegments = new Map<string, AssSegmentLink>();
+  /** The last ASS segment handed to libass since its captions were last dropped. */
+  private lastAssSegment: string | null = null;
   /** Per-media-playlist DVR accumulators (keyed by playlist URL); active only for opted-in channels. */
   private dvrAccumulators = new Map<string, HlsWindowAccumulator>();
   /** Current channel's DVR seek-window in seconds, or null when it doesn't opt in. */
@@ -94,6 +111,28 @@ export class TvPlayer implements AssSink {
     // page; flag the container so CSS can hide the stray subtitle overlay while in PiP.
     this.video.addEventListener('enterpictureinpicture', () => this.container.classList.add('pip'));
     this.video.addEventListener('leavepictureinpicture', () => this.container.classList.remove('pip'));
+    this.video.addEventListener('seeking', () => this.dropCaptionsOutsideBuffer());
+  }
+
+  /**
+   * A seek outside Shaka's text buffer makes Shaka drop that buffer and fetch from the new position;
+   * drop the captions libass holds with it. Kept, a caption without an End from the old position
+   * would end at whatever caption start is known next, which may be minutes away from it.
+   */
+  private dropCaptionsOutsideBuffer(): void {
+    if (!this.libass || this.activeTextTrack === null) return;
+    const t = this.video.currentTime;
+    if (this.player.getBufferedInfo().text.some((r) => r.start <= t && t < r.end)) return;
+    this.dropCaptions();
+  }
+
+  /** Clear libass and drop pending translations along with their context. */
+  private dropCaptions(): void {
+    this.libass?.clear();
+    this.lastAssSegment = null;
+    this.textGeneration++;
+    this.koreanChain = Promise.resolve();
+    this.captionHistory = new CaptionHistory();
   }
 
   /**
@@ -360,23 +399,61 @@ export class TvPlayer implements AssSink {
   /** A media segment's ASS; the Korean track's are translated first. */
   appendSegment(text: string, segmentStartSec: number, segmentEndSec: number, uri: string): void {
     this.syncSubtitleState();
-    const active = this.player.getTextTracks().find((t) => t.active);
-    if (!active) return;
+    if (!this.player.getTextTracks().some((t) => t.active)) return;
+    const continues = this.lastAssSegment !== null && this.assSegments.get(uri)?.prev === this.lastAssSegment;
+    this.lastAssSegment = uri;
+    this.addSegment(text, segmentStartSec, segmentEndSec, uri, false);
+    if (!continues) void this.backfill(uri, segmentStartSec);
+  }
+
+  private addSegment(text: string, startSec: number, endSec: number, uri: string, backfilled: boolean): void {
     // By the selected track, not the URI: Shaka drops the `#hdtrans` fragment on live refreshes.
-    if (active.label !== KOREAN_TRACK_NAME) {
-      this.appendToLibass(text, segmentStartSec, segmentEndSec, uri);
+    if (this.player.getTextTracks().find((t) => t.active)?.label !== KOREAN_TRACK_NAME) {
+      this.appendToLibass(text, startSec, endSec, uri, backfilled);
       return;
     }
-    this.libass?.prepareSegment(text, segmentStartSec, segmentEndSec);
+    this.libass?.prepareSegment(text, startSec);
     const generation = this.textGeneration;
     this.koreanChain = this.koreanChain.then(async () => {
       if (generation !== this.textGeneration) return;
       const history = this.captionHistory;
       if (this.discontinuityBoundaries.has(uri)) history.reset();
-      const ko = await translateSegment(text, segmentStartSec, history);
+      const ko = await translateSegment(text, startSec, history);
       if (generation !== this.textGeneration) return;
-      this.appendToLibass(ko, segmentStartSec, segmentEndSec, uri);
+      this.appendToLibass(ko, startSec, endSec, uri, backfilled);
     });
+  }
+
+  /**
+   * Captions resume at a segment that does not follow the last one (a seek outside the buffer, or
+   * captions turned on): a caption without an End that started in an earlier segment is on screen
+   * there, but Shaka fetches forward only. Fetch back to the segment holding the latest caption.
+   */
+  private async backfill(uri: string, startSec: number): Promise<void> {
+    const generation = this.textGeneration;
+    const found: Array<[string, number, number, string]> = [];
+    let current = uri;
+    let start = startSec;
+    for (let i = 0; i < BACKFILL_SEGMENTS; i++) {
+      const link = this.assSegments.get(current);
+      // Before a program's first segment, captions belong to the previous program.
+      if (!link?.prev || link.boundary) break;
+      const end = start;
+      start -= link.prevDuration;
+      current = link.prev;
+      let text: string;
+      try {
+        const res = await fetch(current);
+        if (!res.ok) break;
+        text = await res.text();
+      } catch {
+        break;
+      }
+      if (generation !== this.textGeneration) return;
+      found.unshift([text, start, end, current]);
+      if (/^Dialogue:/im.test(text)) break;
+    }
+    for (const [text, s, e, u] of found) this.addSegment(text, s, e, u, true);
   }
 
   /** On a discontinuity boundary, reset libass and reload that program's header. */
@@ -385,8 +462,10 @@ export class TvPlayer implements AssSink {
     segmentStartSec: number,
     segmentEndSec: number,
     uri: string,
+    backfilled: boolean,
   ): void {
-    const initUri = this.discontinuityBoundaries.get(uri);
+    // A backfilled segment comes after the ones following it: resetting there would drop them.
+    const initUri = backfilled ? undefined : this.discontinuityBoundaries.get(uri);
     if (initUri) {
       this.discontinuityBoundaries.delete(uri);
       this.libass?.reset(segmentStartSec);
@@ -401,12 +480,7 @@ export class TvPlayer implements AssSink {
     const active = this.player.getTextTracks().find((t) => t.active);
     const key = active ? `${active.language}|${active.label}` : null;
     if (key === this.activeTextTrack) return;
-    if (!active || this.activeTextTrack !== null) {
-      this.libass.clear();
-      this.textGeneration++;
-      this.koreanChain = Promise.resolve();
-      this.captionHistory = new CaptionHistory();
-    }
+    if (!active || this.activeTextTrack !== null) this.dropCaptions();
     this.activeTextTrack = key;
     if (active?.label === KOREAN_TRACK_NAME) {
       this.libass.enableKorean();
@@ -429,6 +503,8 @@ export class TvPlayer implements AssSink {
     this.captionHistory = new CaptionHistory();
     this.fetchedHeaders.clear();
     this.discontinuityBoundaries.clear();
+    this.assSegments.clear();
+    this.lastAssSegment = null;
     this.dvrAccumulators.clear();
     if (this.libass) {
       this.libass.dispose();
@@ -512,18 +588,31 @@ export class TvPlayer implements AssSink {
 
     let currentMapUri: string | null = null;
     let pendingDiscontinuity = false;
+    let duration = 0;
+    let prev: { uri: string; duration: number } | null = null;
     for (const raw of text.split('\n')) {
       const line = raw.trim();
       if (line === '') continue;
       if (line.startsWith('#')) {
         const map = line.match(/^#EXT-X-MAP:URI="([^"]+)"/i);
+        const extinf = line.match(/^#EXTINF:([\d.]+)/i);
         if (map) currentMapUri = new URL(map[1], response.uri).href;
+        else if (extinf) duration = Number(extinf[1]);
         else if (/^#EXT-X-DISCONTINUITY\b/i.test(line) && !/-SEQUENCE/i.test(line))
           pendingDiscontinuity = true;
         continue;
       }
       // Segment line.
       const segUri = new URL(line, response.uri).href;
+      // The playlist's first segment has no known predecessor; keep one learned on an earlier refresh.
+      if (prev || !this.assSegments.has(segUri)) {
+        this.assSegments.set(segUri, {
+          prev: prev?.uri ?? null,
+          prevDuration: prev?.duration ?? 0,
+          boundary: pendingDiscontinuity,
+        });
+      }
+      prev = { uri: segUri, duration };
       if (pendingDiscontinuity && currentMapUri) {
         this.discontinuityBoundaries.set(segUri, currentMapUri);
         pendingDiscontinuity = false;
@@ -531,6 +620,11 @@ export class TvPlayer implements AssSink {
         // Current program's header — fetch once (deduped across live playlist refreshes).
         void this.loadHeader(currentMapUri, /* force= */ false);
       }
+    }
+
+    for (const uri of this.assSegments.keys()) {
+      if (this.assSegments.size <= ASS_SEGMENT_LIMIT) break;
+      this.assSegments.delete(uri);
     }
 
     const stripped = text.replace(/^#EXT-X-MAP:.*(?:\r?\n)?/gim, '');
