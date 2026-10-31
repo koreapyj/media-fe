@@ -209,6 +209,9 @@ tv.dropCaptionsOutsideBuffer();
 tv.appendSegment(line('0:00:01.00', 'later'), 450, 456, 'later.ass');
 await tv.koreanChain;
 assert.deepEqual(seekOctopus.events.map(e => e.Text), ['later'], 'nothing from the past position is left after a forward seek');
+tv.appendSegment(line('0:00:01.00', '大量に作れないので￫'), 456, 462, 'arrow.ass');
+await tv.koreanChain;
+assert.equal(seekOctopus.events.at(-1).Text, '大量に作れないので→', 'the halfwidth arrow is drawn with a glyph the fonts have');
 
 // A destination channel must not wait for a discarded source-channel translation.
 let finishOld;

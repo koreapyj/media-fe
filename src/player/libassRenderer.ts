@@ -146,7 +146,8 @@ export class LibassRenderer {
         MarginR: ev.marginR,
         MarginV: ev.marginV,
         Effect: ev.effect,
-        Text: ev.text.replace(/\{\\(3a&Hff&|bord3)\}/g,''),
+        // Neither caption font has the halfwidth arrow (U+FFEB) some channels end a line with.
+        Text: ev.text.replace(/\{\\(3a&Hff&|bord3)\}/g,'').replace(/\uFFEB/g, '→'),
         ReadOrder: this.eventCount,
       });
       if (open) this.openEvents.push({ index: this.eventCount, startMs: ev.startMs });
