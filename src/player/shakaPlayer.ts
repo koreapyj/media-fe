@@ -138,6 +138,8 @@ export class TvPlayer implements AssSink {
         'overflow_menu',
         'fullscreen',
       ],
+      // Show each subtitle track's HLS NAME (e.g. "한국어 (자동번역)") instead of just its language.
+      textTrackLabelFormat: shaka.ui.Overlay.TrackLabelFormat.LABEL_OR_LANGUAGE,
       "enableTooltips": true,
       "enableKeyboardPlaybackControls": false,
       "singleClickForPlayAndPause": false,
