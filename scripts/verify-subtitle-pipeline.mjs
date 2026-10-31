@@ -88,6 +88,7 @@ const tv = Object.create(TvPlayer.prototype);
 Object.assign(tv, {
   video: {}, libass: null, activeTextTrack: null, textGeneration: 0,
   koreanChain: Promise.resolve(), fetchedHeaders: new Set(), discontinuityBoundaries: new Map(),
+  assSegments: new Map(), lastAssSegment: null,
   dvrAccumulators: new Map(), startContentTitle() {},
   player: { configure() {}, load: async () => {}, getTextTracks: () => [koTrack], selectTextTrack() {} },
 });
@@ -212,6 +213,60 @@ assert.deepEqual(seekOctopus.events.map(e => e.Text), ['later'], 'nothing from t
 tv.appendSegment(line('0:00:01.00', '大量に作れないので￫'), 456, 462, 'arrow.ass');
 await tv.koreanChain;
 assert.equal(seekOctopus.events.at(-1).Text, '大量に作れないので→', 'the halfwidth arrow is drawn with a glyph the fonts have');
+
+// Where captions resume after a seek, the caption already on screen comes from an earlier segment.
+const resumeTrack = { language: 'ja', label: 'subtitle_3', active: true, mimeType: 'text/x-ssa' };
+tv.player.getTextTracks = () => [resumeTrack];
+tv.loadHeader = async () => {};
+const base = 'https://cdn.example/arib_ass/';
+const playlist = (names, boundaryAt) => ({
+  uri: base + 'stream.m3u8',
+  data: new TextEncoder().encode(['#EXTM3U', '#EXT-X-MAP:URI="init.ass"',
+    ...names.flatMap((n) => [...(n === boundaryAt ? ['#EXT-X-DISCONTINUITY', '#EXT-X-MAP:URI="init2.ass"'] : []), '#EXTINF:5.000000,', n])].join('\n')).buffer,
+});
+const files = {
+  'a.ass': line('0:00:02.00', 'carried'), // 102 s, still on screen at 110 s
+  'b.ass': '[Events]\n',
+  'c.ass': line('0:00:03.00', 'next'), // 113 s
+  'd.ass': '[Events]\n',
+};
+const fetched = [];
+globalThis.fetch = async (u) => { fetched.push(u.split('/').pop()); return { ok: true, text: async () => files[u.split('/').pop()] }; };
+const settle = async () => { for (let i = 0; i < 20; i++) await tick(); };
+tv.rewriteAssPlaylist(playlist(['a.ass', 'b.ass', 'c.ass']));
+tv.rewriteAssPlaylist(playlist(['b.ass', 'c.ass', 'd.ass'])); // a refresh keeps what came before b
+tv.syncSubtitleState();
+const resumeOctopus = instances.at(-1);
+tv.appendSegment(files['c.ass'], 110, 115, base + 'c.ass');
+await settle();
+assert.deepEqual(fetched, ['b.ass', 'a.ass'], 'looks back until a segment with a caption');
+const carried = resumeOctopus.events.find(e => e.Text === 'carried');
+assert.equal(carried?.Start, 102000, 'the earlier caption is placed at its own time');
+assert.equal(carried?.Duration, 11000, 'and ends at the next caption');
+tv.appendSegment(files['d.ass'], 115, 120, base + 'd.ass');
+await settle();
+assert.equal(fetched.length, 2, 'a segment following the last one does not look back');
+// Not past the start of a program, and not after another seek.
+tv.discontinuityBoundaries.clear();
+tv.rewriteAssPlaylist(playlist(['a.ass', 'b.ass', 'c.ass'], 'c.ass'));
+tv.discontinuityBoundaries.clear(); // the boundary reset itself is covered above
+tv.dropCaptions();
+fetched.length = 0;
+tv.appendSegment(files['c.ass'], 110, 115, base + 'c.ass');
+await settle();
+assert.deepEqual(fetched, [], 'a program\'s first segment does not look into the previous program');
+tv.assSegments.get(base + 'c.ass').boundary = false;
+tv.dropCaptions();
+let release;
+globalThis.fetch = async (u) => { fetched.push(u.split('/').pop()); await new Promise(r => { release = r; }); return { ok: true, text: async () => files[u.split('/').pop()] }; };
+tv.appendSegment(files['c.ass'], 110, 115, base + 'c.ass');
+await tick();
+tv.dropCaptions(); // seek again while looking back
+release();
+await settle();
+assert.ok(!instances.at(-1).events.some(e => e.Text === 'carried' || e.Text === 'next'), 'a look-back interrupted by a seek is dropped');
+tv.player.getTextTracks = () => [koTrack];
+tv.syncSubtitleState();
 
 // A destination channel must not wait for a discarded source-channel translation.
 let finishOld;
