@@ -45,21 +45,21 @@ const CHAIN_CAPTIONS = 6;
 const CHAIN_SEC = 30;
 const SILENCE_SEC = 30;
 
-/** The captions menu shows track names; the server names its tracks "subtitle_3" and so on. */
-const JAPANESE_TRACK_NAME = '日本語';
-
 export function addKoreanRendition(master: string): string {
   if (master.includes(`NAME="${KOREAN_TRACK_NAME}"`)) return master;
+  // Official Korean subtitles win; a machine translation next to them would only be a worse copy.
+  const hasKorean = master.split(/\r?\n/).some((l) =>
+    l.startsWith('#EXT-X-MEDIA:') && /TYPE=SUBTITLES/.test(l) && /LANGUAGE="(ko|kor)(-[^"]*)?"/i.test(l));
+  if (hasKorean) return master;
   return master.replace(/^#EXT-X-MEDIA:(.*TYPE=SUBTITLES.*)$/gm, (line, attrs: string) => {
     if (!/LANGUAGE="(ja|jpn)"/i.test(attrs)) return line;
-    const ja = attrs.replace(/NAME="[^"]*"/, `NAME="${JAPANESE_TRACK_NAME}"`);
     const ko = attrs
       .replace(/NAME="[^"]*"/, `NAME="${KOREAN_TRACK_NAME}"`)
       .replace(/LANGUAGE="[^"]*"/, 'LANGUAGE="ko"')
       .replace(/DEFAULT=YES/, 'DEFAULT=NO')
       .replace(/AUTOSELECT=YES/, 'AUTOSELECT=NO')
       .replace(/URI="([^"#]*)[^"]*"/, `URI="$1${MARK}"`);
-    return `#EXT-X-MEDIA:${ja}\n#EXT-X-MEDIA:${ko}`;
+    return `${line}\n#EXT-X-MEDIA:${ko}`;
   });
 }
 
