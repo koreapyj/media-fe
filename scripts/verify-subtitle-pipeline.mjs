@@ -168,6 +168,32 @@ assert.equal(instances.at(-1).events[0]?.Duration, 2000, 'discontinuity retains 
 finishes[1]();
 await tv.koreanChain;
 
+// Seeking back past the buffer: a caption must not run until a start from a much later segment.
+const line = (start, text) => `[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,${start},,Default,,0,0,0,,${text}
+`;
+const seek = new LibassRenderer({});
+seek.setHeader(HEADER);
+await tick();
+const seekOctopus = instances.at(-1);
+seek.appendSegment(line('0:00:01.00', 'live'), 600, 606); // live edge, before the seek
+seek.appendSegment(line('0:00:04.00', 'past A'), 300, 306); // after seeking back 5 minutes
+const pastA = seekOctopus.events.find(e => e.Text === 'past A');
+assert.ok(pastA.Duration > 300_000, `a past caption stays open instead of ending at the live caption (Duration ${pastA.Duration})`);
+seek.appendSegment(line('0:00:01.00', 'past B'), 306, 312);
+assert.equal(pastA.Duration, 3000, 'the next past segment closes it at the following caption');
+assert.ok(seekOctopus.events.find(e => e.Text === 'past B').Duration > 300_000, 'past B stays open: 312s to 600s has not been seen yet');
+// Playing on into segments already seen at the live edge must not add their captions again.
+seek.appendSegment(line('0:00:01.00', 'live'), 600, 606);
+assert.equal(seekOctopus.events.filter(e => e.Text === 'live').length, 1, 'a re-fetched segment does not duplicate its captions');
+seek.reset();
+seek.setHeader(HEADER);
+await tick();
+seek.appendSegment(line('0:00:01.00', 'live'), 600, 606);
+assert.equal(instances.at(-1).events.filter(e => e.Text === 'live').length, 1, 'after a reset the rebuilt track gets the caption again');
+seek.dispose();
+
 // A destination channel must not wait for a discarded source-channel translation.
 let finishOld;
 globalThis.__translateSegment = text => new Promise(resolve => { finishOld = () => resolve(text); });

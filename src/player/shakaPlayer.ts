@@ -367,7 +367,7 @@ export class TvPlayer implements AssSink {
       this.appendToLibass(text, segmentStartSec, segmentEndSec, uri);
       return;
     }
-    this.libass?.prepareSegment(text, segmentStartSec);
+    this.libass?.prepareSegment(text, segmentStartSec, segmentEndSec);
     const generation = this.textGeneration;
     this.koreanChain = this.koreanChain.then(async () => {
       if (generation !== this.textGeneration) return;
