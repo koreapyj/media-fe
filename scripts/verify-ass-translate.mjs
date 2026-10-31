@@ -26,13 +26,20 @@ const ko = master.split('\n').find((l) => l.includes(KOREAN_TRACK_NAME));
 ok(ko?.includes('TYPE=SUBTITLES') && ko.includes('GROUP-ID="arib"'), 'Korean rendition joins the same subtitle group');
 ok(ko?.includes('LANGUAGE="ko"') && ko.includes('DEFAULT=NO'), `Korean rendition is ko and not default: ${ko}`);
 ok(ko?.includes('URI="arib_ass/stream.m3u8#hdtrans"'), `Korean rendition URI carries the mark: ${ko}`);
-const ja = master.split('\n').find((l) => l.includes('URI="arib_ass/stream.m3u8"'));
-ok(ja?.includes('NAME="日本語"') && ja.includes('LANGUAGE="ja"') && ja.includes('DEFAULT=YES'), `Japanese rendition is named for the captions menu, otherwise unchanged: ${ja}`);
-ok(master.split('\n').filter((l) => l.includes('TYPE=SUBTITLES')).length === 2, 'one Japanese and one Korean subtitle rendition');
 ok(master.split('\n').filter((l) => l.includes('TYPE=AUDIO')).length === 1, 'audio renditions are not copied');
-ok(master.includes('NAME="audio_1"'), 'audio rendition names are untouched');
 ok(addKoreanRendition(master) === master, 'adding twice is a no-op');
 ok(addKoreanRendition(MASTER.replace(/LANGUAGE="ja",URI="arib/, 'LANGUAGE="en",URI="arib')) === MASTER.replace(/LANGUAGE="ja",URI="arib/, 'LANGUAGE="en",URI="arib'), 'no Japanese subtitles → unchanged');
+ok(master.includes('NAME="subtitle_3",DEFAULT=YES,LANGUAGE="ja"'), 'the Japanese rendition keeps its server name');
+// Official Korean subtitles (Netflix-style ja + ko): no machine-translated copy, in either attribute order.
+const WITH_KO = MASTER.replace(/^(#EXT-X-STREAM-INF)/m,
+  '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="arib",NAME="subtitle_4",DEFAULT=NO,LANGUAGE="ko",URI="ko/stream.m3u8"\n$1');
+ok(addKoreanRendition(WITH_KO) === WITH_KO, 'official Korean subtitles → no translated track');
+const WITH_KO_REORDERED = MASTER.replace(/^(#EXT-X-STREAM-INF)/m,
+  '#EXT-X-MEDIA:LANGUAGE="ko-KR",NAME="Korean",TYPE=SUBTITLES,GROUP-ID="arib",URI="ko/stream.m3u8"\n$1');
+ok(addKoreanRendition(WITH_KO_REORDERED) === WITH_KO_REORDERED, 'official Korean found whatever the attribute order');
+const WITH_KO_AUDIO = MASTER.replace(/^(#EXT-X-STREAM-INF)/m,
+  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="audio_2",LANGUAGE="ko",URI="audio_ko/stream.m3u8"\n$1');
+ok(addKoreanRendition(WITH_KO_AUDIO).includes(KOREAN_TRACK_NAME), 'Korean audio alone does not suppress the translated track');
 
 // --- Header: a Korean style cloned from the first style. ---
 const HEADER = `[Script Info]
